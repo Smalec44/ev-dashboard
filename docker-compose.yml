@@ -1,0 +1,20 @@
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    container_name: ev-dashboard-db
+    environment:
+      POSTGRES_USER: ev
+      POSTGRES_PASSWORD: ev
+      POSTGRES_DB: ev_dashboard
+    ports:
+      - "5432:5432"
+    volumes:
+      - ev_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ev -d ev_dashboard"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  ev_pgdata:
