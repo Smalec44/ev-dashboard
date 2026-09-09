@@ -57,6 +57,13 @@ const STOP_AT_MIN = ENDPOINT_MARGIN;
 const STOP_AT_MAX = 1 - ENDPOINT_MARGIN;
 const DEFAULT_STOP_AT = 0.5;
 
+/** Only ever rendered after the fetch resolves, so it never runs on the server. */
+const generatedFormat = new Intl.DateTimeFormat("en-CH", {
+  dateStyle: "medium",
+  timeStyle: "short",
+  timeZone: "Europe/Zurich",
+});
+
 /** How often "open now" is re-checked against the clock. */
 const CLOCK_REFRESH_MS = 60_000;
 
@@ -106,6 +113,11 @@ export function Dashboard() {
   // The curated seed stations render immediately and are replaced on arrival.
   const [stations, setStations] = useState<ChargingStation[]>(CURATED_STATIONS);
   const [feed, setFeed] = useState<"loading" | "ready" | "error">("loading");
+  // When the loaded data was built; null until the first successful fetch,
+  // which also tells the status row whether a failure lost anything.
+  const [generatedAt, setGeneratedAt] = useState<string | null>(null);
+  // Bumped by the refresh button; the effect re-runs and skips the HTTP cache.
+  const [reloads, setReloads] = useState(0);
   // "Open now" is read against the venue's own Swiss clock, so it does not
   // depend on where the viewer is — but it does depend on when the render
   // happens, and the server's moment is not the browser's.
@@ -117,7 +129,9 @@ export function Dashboard() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/stations.json")
+    // A refresh has to reach the server: the file is static and the browser
+    // would otherwise happily hand back the copy it already holds.
+    fetch("/stations.json", { cache: reloads === 0 ? "default" : "reload" })
       .then((res) => {
         if (!res.ok) throw new Error(`stations.json returned ${res.status}`);
         return res.json() as Promise<StationFeed>;
@@ -125,6 +139,7 @@ export function Dashboard() {
       .then((data) => {
         if (cancelled) return;
         setStations(mergeStations(data.stations));
+        setGeneratedAt(data.generatedAt);
         setFeed("ready");
       })
       .catch(() => {
@@ -133,7 +148,12 @@ export function Dashboard() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [reloads]);
+
+  function refresh() {
+    setFeed("loading");
+    setReloads((count) => count + 1);
+  }
 
   const region = useMemo(() => findRegion(query), [query]);
   const from = useMemo(() => findRegion(fromQuery), [fromQuery]);
@@ -409,17 +429,33 @@ export function Dashboard() {
         </div>
       </div>
 
-      {feed !== "ready" && (
-        <p
-          className={`rounded-xl border border-border px-4 py-3 text-xs ${
-            feed === "error" ? "bg-warn-soft text-warn" : "bg-surface text-muted"
-          }`}
+      <div
+        className={`flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border px-4 py-3 text-xs ${
+          feed === "error" ? "bg-warn-soft text-warn" : "bg-surface text-muted"
+        }`}
+      >
+        <span>
+          {feed === "loading" &&
+            (generatedAt
+              ? "Refreshing the national charging feed…"
+              : "Loading the national charging feed — showing seed stations meanwhile.")}
+          {feed === "error" &&
+            (generatedAt
+              ? `Refresh failed — still showing the data from ${generatedFormat.format(new Date(generatedAt))}.`
+              : "Could not load the national charging feed. Showing seed stations for the ten original cities only.")}
+          {feed === "ready" &&
+            generatedAt &&
+            `Charging data generated ${generatedFormat.format(new Date(generatedAt))}.`}
+        </span>
+        <button
+          type="button"
+          onClick={refresh}
+          disabled={feed === "loading"}
+          className="rounded-lg border border-border bg-surface-muted px-3 py-1.5 font-medium text-foreground transition-colors hover:text-accent disabled:cursor-wait disabled:opacity-60"
         >
-          {feed === "loading"
-            ? "Loading the national charging feed — showing seed stations meanwhile."
-            : "Could not load the national charging feed. Showing seed stations for the ten original cities only."}
-        </p>
-      )}
+          {feed === "loading" ? "Refreshing…" : feed === "error" ? "Retry" : "Refresh data"}
+        </button>
+      </div>
 
       {mode === "region" && !region && query.trim() !== "" && (
         <div className="rounded-xl border border-border bg-surface p-5 text-sm text-muted">
