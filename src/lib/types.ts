@@ -52,6 +52,20 @@ export interface ParkingTerms {
   maxStayMinutes?: number | null;
 }
 
+/**
+ * Stall status from the federal status feed at the moment of a live refresh.
+ * Counts per site; "busy" folds occupied and reserved together.
+ */
+export interface LiveStatus {
+  available: number;
+  busy: number;
+  outOfService: number;
+  /** Reported without a usable status, or not reported at all. */
+  unknown: number;
+  /** When the status feed was read. */
+  at: string;
+}
+
 export interface ChargingStation extends LatLon {
   id: string;
   name: string;
@@ -80,6 +94,10 @@ export interface ChargingStation extends LatLon {
   greenScore?: number | null;
   /** Absent when no tagged OSM charger sits at this site. */
   parking?: ParkingTerms;
+  /** Unrestricted access, per the feed. Says nothing about cost. */
+  publiclyAccessible?: boolean;
+  /** Only present after a live refresh; the static build carries none. */
+  live?: LiveStatus;
 }
 
 export interface Region extends LatLon {

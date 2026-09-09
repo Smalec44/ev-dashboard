@@ -15,7 +15,7 @@ export const CRITERIA: { id: Criterion; label: string; hint: string }[] = [
   {
     id: "availability",
     label: "Availability",
-    hint: "More stalls and better uptime rank first",
+    hint: "More free stalls rank first — live after a refresh, else all stalls",
   },
   {
     id: "green",
@@ -181,7 +181,20 @@ function fallOff(value: number, worst: number): number {
   return Math.round(clamp01(1 - value / worst) * 100);
 }
 
+/**
+ * Stalls a driver could plausibly plug into right now, per the live status
+ * feed. Unknown counts as free: a tenth of the country's charge points report
+ * no status at all, and scoring those sites as full would be a guess dressed
+ * up as data.
+ */
+export function liveFreeStalls(station: ChargingStation): number | null {
+  if (!station.live) return null;
+  return Math.max(station.stalls - station.live.busy - station.live.outOfService, 0);
+}
+
 function availabilityValue(station: ChargingStation): number {
+  const free = liveFreeStalls(station);
+  if (free !== null) return free;
   return (
     station.stalls *
     ((station.reliabilityPct ?? ASSUMED_RELIABILITY_PCT) / 100)

@@ -1,104 +1,28 @@
 /**
- * Fetches real Swiss charging infrastructure (BFE / ich-tanke-strom) and nearby
- * food POIs (OpenStreetMap), and writes a static cache the app imports.
+ * Fetches real Swiss charging infrastructure (BFE / ich-tanke-strom) and the
+ * OpenStreetMap surroundings (food, green space, parking terms), and writes
+ * the static file the app loads first. The same pipeline serves the live
+ * refresh route; this script adds a disk cache and the patience to wait out
+ * Overpass rate limits.
  *
  * Run: npm run build:data
  */
-import { gunzipSync } from "node:zlib";
 import { writeFileSync, mkdirSync, readFileSync, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { FOOD_RADIUS_M, GREEN_RADIUS_M } from "../src/server/pipeline/attach.ts";
+import { enrich } from "../src/server/pipeline/enrich.ts";
+import { EVSE_URL, buildSites, parseFeed, publishSite } from "../src/server/pipeline/feed.ts";
+import { cellBboxes } from "../src/server/pipeline/geo.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const OUT = resolve(HERE, "../public/stations.json");
 
-const EVSE_URL =
-  "https://data.geo.admin.ch/ch.bfe.ladestellen-elektromobilitaet/data/oicp/ch.bfe.ladestellen-elektromobilitaet.json";
-
-// Override with a comma-separated list to use your own instance — the public
-// ones are heavily rate-limited and will block a host that keeps retrying.
-const OVERPASS_ENDPOINTS = (
-  process.env.OVERPASS_ENDPOINTS ??
-  [
-    // Swiss OSM instance first: closest to this data set and reliably up when
-    // the big generic mirrors are saturated (they answer 504 under load).
-    "https://overpass.osm.ch/api/interpreter",
-    "https://overpass.kumi.systems/api/interpreter",
-    "https://overpass-api.de/api/interpreter",
-    "https://overpass.private.coffee/api/interpreter",
-  ].join(",")
-)
-  .split(",")
-  .map((url) => url.trim())
-  .filter(Boolean);
-
-// Derived from REGIONS in src/data/regions.ts rather than duplicated, so the
-// city names we canonicalise to cannot drift from the ones the UI can search.
-const REGIONS_TS = resolve(HERE, "../src/data/regions.ts");
-const CITY_LOOKUP = new Map();
-const REGION_POINTS = [];
-{
-  // Operators write whatever city name they like into the feed — often the
-  // German exonym ("Sitten" for Sion). Aliases are accepted as feed keys and
-  // normalised to the region's canonical name, so both spellings land together.
-  const norm = (v) => v.toLowerCase().normalize("NFD").replace(/[^a-z0-9]/g, "");
-  const line =
-    /\{ slug: "[^"]+", city: "([^"]+)", canton: "([A-Z]{2})", aliases: \[([^\]]*)\], lat: (-?[\d.]+), lon: (-?[\d.]+) \}/g;
-  for (const m of readFileSync(REGIONS_TS, "utf8").matchAll(line)) {
-    const [, city, canton, rawAliases, lat, lon] = m;
-    REGION_POINTS.push({ city, canton, lat: Number(lat), lon: Number(lon) });
-    const keys = [city, ...(rawAliases.match(/"((?:[^"\\]|\\.)*)"/g) ?? []).map((a) => JSON.parse(a))];
-    for (const key of keys) {
-      // First writer wins: REGIONS is population-ordered, so shared names
-      // (Wohlen AG/BE, Buchs SG/AG) resolve to the larger city.
-      if (!CITY_LOOKUP.has(norm(key))) CITY_LOOKUP.set(norm(key), { city, canton });
-    }
-  }
-  if (CITY_LOOKUP.size === 0) {
-    throw new Error(`No cities parsed from ${REGIONS_TS} — has its format changed?`);
-  }
-}
-
-const lookupCity = (name) =>
-  CITY_LOOKUP.get(name.toLowerCase().normalize("NFD").replace(/[^a-z0-9]/g, ""));
-
-/**
- * Nearest town centre from REGIONS, for a station whose city the list does not
- * know. REGIONS stops at ~1200 inhabitants, so the feed is full of perfectly
- * real places it has never heard of — merged municipalities the feed names by
- * their new name ("Val de Bagnes", where the list still says "Bagnes"), city
- * quarters ("Le Lignon" in Vernier), resorts ("Verbier" is in the list but the
- * chargers there are filed under the municipality) and plain hamlets.
- *
- * Only the canton is taken from the match: it is required by the schema but
- * shown nowhere, and over the charge points whose city IS in the list the
- * nearest centre names the right canton 96% of the time — the rest are
- * cross-border neighbours (Basel/Birsfelden) or cases where the name lookup
- * itself picked the wrong twin (Muri BE vs AG) and the coordinates are righter.
- */
-function nearestRegion(point) {
-  let best = REGION_POINTS[0];
-  let bestKm = Infinity;
-  for (const region of REGION_POINTS) {
-    const km = distanceKmApprox(point, region);
-    if (km < bestKm) {
-      bestKm = km;
-      best = region;
-    }
-  }
-  return best;
-}
-
-/** Equirectangular, at 47°N. Only ever used to rank candidates against each other. */
-function distanceKmApprox(a, b) {
-  return Math.hypot((a.lat - b.lat) * 111, (a.lon - b.lon) * 76);
-}
-
 /**
  * On-disk response cache.
  *
- * Both upstreams are shared public infrastructure: the federal feed is ~20 MB
+ * Both upstreams are shared public infrastructure: the federal feed is ~25 MB
  * per pull and the free Overpass instances rate-limit aggressively (429) and
  * ban repeat offenders. Every response is cached so re-runs, partial failures
  * and iteration cost nothing upstream — a run that dies on batch 12 of 19
@@ -109,13 +33,10 @@ function distanceKmApprox(a, b) {
  *   NO_CACHE=1 npm run …               bypass reads, still writes
  */
 const CACHE_DIR = resolve(HERE, "../.cache/build-data");
-const CACHE_TTL_MS =
-  Number(process.env.CACHE_TTL_HOURS ?? 24) * 60 * 60 * 1000;
-const NO_CACHE =
-  process.env.NO_CACHE === "1" || process.argv.includes("--no-cache");
+const CACHE_TTL_MS = Number(process.env.CACHE_TTL_HOURS ?? 24) * 60 * 60 * 1000;
+const NO_CACHE = process.env.NO_CACHE === "1" || process.argv.includes("--no-cache");
 
-const cacheFile = (key) =>
-  resolve(CACHE_DIR, createHash("sha1").update(key).digest("hex"));
+const cacheFile = (key) => resolve(CACHE_DIR, createHash("sha1").update(key).digest("hex"));
 
 function cacheRead(key) {
   if (NO_CACHE) return null;
@@ -145,139 +66,18 @@ function cacheWrite(key, buffer, label) {
   }
 }
 
-/** Seconds to wait per a 429/503 Retry-After header, capped so we never hang. */
-function retryAfterMs(res) {
-  const raw = res.headers.get("retry-after");
-  if (!raw) return null;
-  const seconds = Number(raw);
-  if (Number.isFinite(seconds)) return Math.min(seconds, 120) * 1000;
-  const at = Date.parse(raw);
-  return Number.isFinite(at) ? Math.min(Math.max(at - Date.now(), 0), 120_000) : null;
-}
-
-// The federal feed carries no tariffs, so prices are per-operator estimates.
-const TARIFFS = {
-  Move: { AC: 0.45, DC: 0.65 },
-  eCarUp: { AC: 0.4, DC: 0.6 },
-  Fastned: { AC: 0.49, DC: 0.65 },
-  "PLUG N ROLL": { AC: 0.45, DC: 0.65 },
-  evpass: { AC: 0.45, DC: 0.68 },
-  "M-Charge": { AC: 0.42, DC: 0.6 },
-  Tesla: { AC: 0.4, DC: 0.55 },
-  Chargepoint: { AC: 0.42, DC: 0.62 },
-  "Shell Recharge": { AC: 0.49, DC: 0.71 },
-  GoFast: { AC: 0.45, DC: 0.64 },
-  Electra: { AC: 0.45, DC: 0.59 },
-  Autosense: { AC: 0.45, DC: 0.66 },
-  Agrola: { AC: 0.44, DC: 0.63 },
-  "Lidl Schweiz AG": { AC: 0.35, DC: 0.55 },
-  "Energie 360 Grad AG": { AC: 0.39, DC: 0.62 },
-  "swisscharge.ch AG": { AC: 0.44, DC: 0.66 },
-  "IWB Industrielle Werke Basel": { AC: 0.38, DC: 0.6 },
-  "Elektrizitätswerk der Stadt Zürich": { AC: 0.4, DC: 0.62 },
-};
-const DEFAULT_TARIFF = { AC: 0.45, DC: 0.65 };
-
-const SKIP_FOOD = process.env.SKIP_FOOD === "1" || process.argv.includes("--no-food");
-
-const OVERPASS_ROUNDS = 4;
-const OVERPASS_BACKOFF_MS = 20_000;
-
-const SKIP_GREEN = process.env.SKIP_GREEN === "1" || process.argv.includes("--no-green");
-const SKIP_PARKING = process.env.SKIP_PARKING === "1" || process.argv.includes("--no-parking");
-
-/**
- * How much each kind of green space is worth to someone waiting at a charger.
- * A park you can sit in is not a road verge, and OSM tags both as "green" —
- * landuse=grass alone outnumbers parks nine to one in Zürich, so weighting is
- * what keeps the score from saying every motorway junction is leafy.
- */
-const GREEN_WEIGHTS = {
-  "leisure=park": 1,
-  "leisure=nature_reserve": 1,
-  "leisure=common": 0.8,
-  "leisure=garden": 0.7,
-  "landuse=forest": 1,
-  "natural=wood": 1,
-  "natural=beach": 1,
-  "landuse=village_green": 0.9,
-  "natural=water": 0.9,
-  "landuse=meadow": 0.7,
-  "natural=grassland": 0.7,
-  "natural=heath": 0.6,
-  "landuse=orchard": 0.6,
-  "landuse=vineyard": 0.5,
-  "landuse=allotments": 0.5,
-  "natural=scrub": 0.4,
-  "landuse=grass": 0.3,
+const overpassCache = {
+  read: (key) => cacheRead(key)?.toString("utf8") ?? null,
+  write: (key, text, label) => cacheWrite(key, Buffer.from(text), label),
 };
 
-const GREEN_RADIUS_M = 400;
-/**
- * Green areas are ways, so Overpass returns a bounding box rather than a shape
- * and distance is measured to the box edge. That is accurate because the boxes
- * are small — 90% have a diagonal under 230 m, well inside the search radius.
- * The handful above this cap are sprawling multi-valley relations (and one way
- * with a corrupt -91 latitude), where the box says nothing useful about where
- * the trees actually are, so they are dropped rather than trusted.
- */
-const GREEN_MAX_DIAGONAL_KM = 2;
-const MAX_GREEN_PER_STATION = 3;
-/** Denser than food by an order of magnitude, so fewer boxes per request. */
-const GREEN_BBOX_BATCH = 10;
-
-const FOOD_RADIUS_M = 400;
-const MAX_FOOD_PER_STATION = 6;
-const WALK_METRES_PER_MINUTE = 80;
-const BBOX_PAD_DEG = 0.012;
-
-function haversineMetres(a, b) {
-  const R = 6_371_000;
-  const toRad = (d) => (d * Math.PI) / 180;
-  const dLat = toRad(b.lat - a.lat);
-  const dLon = toRad(b.lon - a.lon);
-  const lat1 = toRad(a.lat);
-  const lat2 = toRad(b.lat);
-  const h =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(h));
-}
-
-/**
- * Switzerland with a margin wide enough for border sites. The feed carries
- * sentinel coordinates on a small number of records — 45 sit at (50, -15) in
- * the Atlantic and 7 in Malta, all with real Swiss addresses — and a station
- * that claims to be 1,367 km from its own city ruins any distance ranking it
- * lands in, besides drawing its food and greenery from the wrong continent.
- */
-const CH_BOUNDS = { minLat: 45.5, maxLat: 48.0, minLon: 5.5, maxLon: 11.0 };
-
-function parseCoords(record) {
-  const raw = record.GeoCoordinates?.Google;
-  if (!raw) return null;
-  const [lat, lon] = raw.trim().split(/\s+/).map(Number);
-  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
-  if (
-    lat < CH_BOUNDS.minLat || lat > CH_BOUNDS.maxLat ||
-    lon < CH_BOUNDS.minLon || lon > CH_BOUNDS.maxLon
-  ) {
-    return null;
-  }
-  return { lat, lon };
-}
-
-function stationName(record) {
-  // The feed returns either an array of localised names or a single object.
-  const raw = record.ChargingStationNames;
-  const names = Array.isArray(raw) ? raw : raw ? [raw] : [];
-  const preferred =
-    names.find((n) => n.lang === "de") ??
-    names.find((n) => n.lang === "en") ??
-    names[0];
-  const value = preferred?.value?.trim();
-  return value || record.Address?.Street?.trim() || "Charging station";
-}
+const flag = (env, arg) => process.env[env] === "1" || process.argv.includes(arg);
+const SKIP_FOOD = flag("SKIP_FOOD", "--no-food");
+const SKIP_GREEN = flag("SKIP_GREEN", "--no-green");
+const SKIP_PARKING = flag("SKIP_PARKING", "--no-parking");
+const OVERPASS_ENDPOINTS = process.env.OVERPASS_ENDPOINTS?.split(",")
+  .map((url) => url.trim())
+  .filter(Boolean);
 
 async function fetchEvseData() {
   process.stdout.write("Fetching federal EVSE feed… ");
@@ -290,554 +90,35 @@ async function fetchEvseData() {
     buf = Buffer.from(await res.arrayBuffer());
     cacheWrite(EVSE_URL, buf, "BFE EVSE feed");
   }
-  // Served gzipped despite the .json extension.
-  const text =
-    buf[0] === 0x1f && buf[1] === 0x8b
-      ? gunzipSync(buf).toString("utf8")
-      : buf.toString("utf8");
-  const json = JSON.parse(text);
-  const records = json.EVSEData.flatMap((block) =>
-    (block.EVSEDataRecord ?? []).map((r) => ({
-      ...r,
-      operator: block.OperatorName,
-    })),
-  );
+  const records = parseFeed(buf);
   console.log(`${records.length} charging points`);
   return records;
 }
-
-function buildSites(records) {
-  const sites = new Map();
-
-  for (const record of records) {
-    if (record.Accessibility === "Restricted access") continue;
-
-    const coords = parseCoords(record);
-    if (!coords) continue;
-
-    /*
-     * The city is a label, not a filter. Requiring it to be a REGIONS name
-     * dropped 3019 of 11702 sites — a quarter of the country's public chargers,
-     * Verbier's included — because the feed spells places in ways a list of the
-     * 1000 largest municipalities cannot cover. The UI finds stations by radius
-     * around a town centre anyway, so an unrecognised name costs nothing:
-     * canonicalise it when we can, keep the operator's own spelling when we
-     * cannot, and let geography do the rest.
-     */
-    const rawCity = record.Address?.City?.trim();
-    const match = rawCity ? lookupCity(rawCity) : undefined;
-    // Some records carry a placeholder ("-") or a stray address fragment
-    // ("/ West") where the city should be; anything not starting with a letter
-    // is not a place name, so let the coordinates answer instead.
-    const named = rawCity && /^\p{L}/u.test(rawCity) ? rawCity : null;
-    const fallback = match ? null : nearestRegion(coords);
-    const city = match?.city ?? named ?? fallback.city;
-    const canton = match?.canton ?? fallback.canton;
-
-    const key = record.ChargingStationId || record.EvseID;
-    const facilities = record.ChargingFacilities ?? [];
-    const power = Math.max(
-      0,
-      ...facilities.map((f) => Number(f.power)).filter(Number.isFinite),
-    );
-    const isDc = facilities.some((f) => f.powertype === "DC");
-
-    const existing = sites.get(key);
-    if (existing) {
-      existing.stalls += 1;
-      existing.maxPowerKw = Math.max(existing.maxPowerKw, power);
-      existing.isDc ||= isDc;
-      existing.latSum += coords.lat;
-      existing.lonSum += coords.lon;
-      continue;
-    }
-
-    sites.set(key, {
-      id: key,
-      name: stationName(record),
-      operator: record.operator ?? "Unknown",
-      city,
-      canton,
-      address: [record.Address?.Street, record.Address?.PostalCode, city]
-        .filter(Boolean)
-        .join(", "),
-      // NB: Accessibility describes access, not cost. "Free publicly accessible"
-      // means unrestricted, not free of charge — the feed carries no prices at all.
-      publiclyAccessible: record.Accessibility === "Free publicly accessible",
-      stalls: 1,
-      maxPowerKw: power,
-      isDc,
-      latSum: coords.lat,
-      lonSum: coords.lon,
-    });
-  }
-
-  return [...sites.values()].map((site) => {
-    const connectorType = site.isDc ? "DC" : "AC";
-    const tariff = TARIFFS[site.operator] ?? DEFAULT_TARIFF;
-    return {
-      id: site.id,
-      name: site.name,
-      operator: site.operator,
-      city: site.city,
-      canton: site.canton,
-      address: site.address,
-      connectorType,
-      maxPowerKw: Math.round(site.maxPowerKw * 10) / 10,
-      stalls: site.stalls,
-      pricePerKwh: tariff[connectorType],
-      priceIsEstimate: true,
-      publiclyAccessible: site.publiclyAccessible,
-      lat: Math.round((site.latSum / site.stalls) * 1e5) / 1e5,
-      lon: Math.round((site.lonSum / site.stalls) * 1e5) / 1e5,
-      food: [],
-    };
-  });
-}
-
-/**
- * Overpass boxes are grouped by geography, not by city name.
- *
- * The name is the operator's free text: 26 sites simply say "Schweiz", and
- * Buchs, Marbach and Bürglen each name several places a hundred kilometres
- * apart. Grouping on it produced one box of 24,700 km² and 103,000 km² of box
- * in all — for a country of 41,000 — which is both a lot of POIs downloaded
- * twice and exactly the shape of query Overpass answers with a 504.
- *
- * A fixed grid on the coordinates has neither problem: every box is about a
- * cell wide, and the total tracks where the chargers actually are. Cells are
- * ~11 km on both sides at Swiss latitudes. BBOX_PAD_DEG is far wider than the
- * 400 m search radius, so a site against a cell edge still sees its POIs.
- */
-const CELL_LAT_DEG = 0.1;
-const CELL_LON_DEG = 0.15;
-
-function cellKey(site) {
-  const row = Math.floor(site.lat / CELL_LAT_DEG);
-  const col = Math.floor(site.lon / CELL_LON_DEG);
-  return `${row}:${col}`;
-}
-
-function bboxFor(sites) {
-  const lats = sites.map((s) => s.lat);
-  const lons = sites.map((s) => s.lon);
-  return [
-    Math.min(...lats) - BBOX_PAD_DEG,
-    Math.min(...lons) - BBOX_PAD_DEG,
-    Math.max(...lats) + BBOX_PAD_DEG,
-    Math.max(...lons) + BBOX_PAD_DEG,
-  ];
-}
-
-/**
- * Overpass rejects a union spanning hundreds of bounding boxes, so the cities are
- * fetched in batches and the results concatenated. Batched rather than one request
- * per city: still far politer, but small enough that a single query completes.
- */
-const BBOX_BATCH = 40;
-
-async function fetchFood(bboxes) {
-  // Neighbouring cities produce overlapping bounding boxes, so the same OSM node
-  // is returned by several batches (and by a single union query). Keyed by
-  // element id, or every station near a boundary lists its cafes twice.
-  const seen = new Map();
-  for (let i = 0; i < bboxes.length; i += BBOX_BATCH) {
-    const batch = bboxes.slice(i, i + BBOX_BATCH);
-    process.stdout.write(`\n  batch ${i / BBOX_BATCH + 1}/${Math.ceil(bboxes.length / BBOX_BATCH)}… `);
-    const { spots, cached } = await fetchFoodBatch(batch);
-    for (const spot of spots) if (!seen.has(spot.id)) seen.set(spot.id, spot);
-    // Only pace ourselves against the real server; cached batches cost nothing.
-    if (!cached && i + BBOX_BATCH < bboxes.length) await sleep(1000);
-  }
-  return [...seen.values()];
-}
-
-async function fetchFoodBatch(bboxes) {
-  const clauses = bboxes
-    .map((bbox) => {
-      const [s, w, n, e] = bbox.map((v) => v.toFixed(5));
-      const box = `(${s},${w},${n},${e})`;
-      return `node["amenity"~"^(restaurant|cafe|fast_food|bar|pub)$"]${box};node["shop"="bakery"]${box};`;
-    })
-    .join("");
-  const query = `[out:json][timeout:180];(${clauses});out body;`;
-  const { json, cached } = await overpass(query, `${bboxes.length} bboxes`);
-  return { spots: parseOverpass(json), cached };
-}
-
-/**
- * One Overpass round trip: cache, endpoint rotation and backoff. Shared by the
- * food and greenery passes so a change to the retry policy applies to both.
- */
-async function overpass(query, label) {
-  // Keyed by the query itself, so a partially failed run replays the batches
-  // that already succeeded instead of asking Overpass for them a second time.
-  const cached = cacheRead(query);
-  if (cached) {
-    process.stdout.write("(cached) ");
-    return { json: JSON.parse(cached.toString("utf8")), cached: true };
-  }
-
-  // Free Overpass instances routinely answer 429/504 under load, so rotate
-  // endpoints and back off rather than giving up on the first refusal.
-  let lastError;
-  for (let round = 0; round < OVERPASS_ROUNDS; round += 1) {
-    for (const endpoint of OVERPASS_ENDPOINTS) {
-      try {
-        const res = await fetch(endpoint, {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: new URLSearchParams({ data: query }),
-        });
-        // Being told to slow down is not a failure to retry immediately
-        // against the next host — wait exactly as long as we were asked to.
-        if (res.status === 429 || res.status === 503) {
-          const wait = retryAfterMs(res) ?? OVERPASS_BACKOFF_MS;
-          lastError = new Error(`${endpoint} returned ${res.status}`);
-          process.stdout.write(`(${res.status}, waiting ${Math.round(wait / 1000)}s) `);
-          await sleep(wait);
-          continue;
-        }
-        if (!res.ok) throw new Error(`${endpoint} returned ${res.status}`);
-        const text = await res.text();
-        cacheWrite(query, Buffer.from(text), `overpass: ${label}`);
-        return { json: JSON.parse(text), cached: false };
-      } catch (error) {
-        lastError = error;
-        await sleep(2000);
-      }
-    }
-    await sleep(OVERPASS_BACKOFF_MS * (round + 1));
-  }
-  throw lastError;
-}
-
-// yes/no (and takeaway's "only") -> boolean; anything else means untagged.
-const toBool = (v) => (v === "yes" || v === "only" ? true : v === "no" ? false : undefined);
-
-function parseOverpass(json) {
-  return json.elements
-    .filter((el) => el.tags?.name && Number.isFinite(el.lat))
-    .map((el) => {
-      const tags = el.tags;
-      const spot = {
-        id: el.id,
-        name: tags.name,
-        category: tags.amenity ?? tags.shop,
-        cuisine: tags.cuisine?.split(";")[0] ?? null,
-        lat: el.lat,
-        lon: el.lon,
-      };
-      if (tags.opening_hours) spot.openingHours = tags.opening_hours;
-      const outdoorSeating = toBool(tags.outdoor_seating);
-      if (outdoorSeating !== undefined) spot.outdoorSeating = outdoorSeating;
-      const takeaway = toBool(tags.takeaway);
-      if (takeaway !== undefined) spot.takeaway = takeaway;
-      if (tags.wheelchair === "yes" || tags.wheelchair === "limited" || tags.wheelchair === "no") {
-        spot.wheelchair = tags.wheelchair;
-      }
-      return spot;
-    });
-}
-
-async function fetchGreen(bboxes) {
-  const seen = new Map();
-  for (let i = 0; i < bboxes.length; i += GREEN_BBOX_BATCH) {
-    const batch = bboxes.slice(i, i + GREEN_BBOX_BATCH);
-    process.stdout.write(
-      `\n  batch ${i / GREEN_BBOX_BATCH + 1}/${Math.ceil(bboxes.length / GREEN_BBOX_BATCH)}… `,
-    );
-    const clauses = batch
-      .map((bbox) => {
-        const [s, w, n, e] = bbox.map((v) => v.toFixed(5));
-        const box = `(${s},${w},${n},${e})`;
-        return (
-          `way["leisure"~"^(park|garden|nature_reserve|common)$"]${box};` +
-          `way["landuse"~"^(forest|meadow|grass|village_green|orchard|vineyard|allotments)$"]${box};` +
-          `way["natural"~"^(wood|water|scrub|heath|grassland|beach)$"]${box};`
-        );
-      })
-      .join("");
-    // "tags bb" rather than "geom": the bounding box is a tenth of the bytes
-    // and, at these feature sizes, close enough to the real outline.
-    const query = `[out:json][timeout:180];(${clauses});out tags bb;`;
-    const { json, cached } = await overpass(query, `green, ${batch.length} bboxes`);
-    for (const area of parseGreen(json)) if (!seen.has(area.id)) seen.set(area.id, area);
-    if (!cached && i + GREEN_BBOX_BATCH < bboxes.length) await sleep(1000);
-  }
-  return [...seen.values()];
-}
-
-function parseGreen(json) {
-  const areas = [];
-  for (const el of json.elements) {
-    const b = el.bounds;
-    if (!b || !el.tags) continue;
-    // Guards against corrupt geometry seen in the live data (a forest way
-    // reporting minlat -91), which would otherwise sit 0 m from everything.
-    if (b.minlat < 45 || b.maxlat > 48.5 || b.minlon < 5 || b.maxlon > 11) continue;
-    const key = ["leisure", "landuse", "natural"]
-      .map((k) => (el.tags[k] ? `${k}=${el.tags[k]}` : null))
-      .find((k) => k && GREEN_WEIGHTS[k] !== undefined);
-    if (!key) continue;
-    const diagonalKm = Math.hypot(
-      (b.maxlat - b.minlat) * 111,
-      (b.maxlon - b.minlon) * 75,
-    );
-    if (diagonalKm > GREEN_MAX_DIAGONAL_KM) continue;
-    areas.push({
-      id: el.id,
-      name: el.tags.name ?? null,
-      category: key.split("=")[1],
-      weight: GREEN_WEIGHTS[key],
-      bounds: b,
-    });
-  }
-  return areas;
-}
-
-/** Metres from a point to the nearest edge of a bounding box; 0 when inside. */
-function metresToBounds(point, b) {
-  const dLat = Math.max(b.minlat - point.lat, 0, point.lat - b.maxlat);
-  const dLon = Math.max(b.minlon - point.lon, 0, point.lon - b.maxlon);
-  if (dLat === 0 && dLon === 0) return 0;
-  return haversineMetres(point, {
-    lat: point.lat + (b.minlat - point.lat > 0 ? dLat : -dLat),
-    lon: point.lon + (b.minlon - point.lon > 0 ? dLon : -dLon),
-  });
-}
-
-/**
- * 0–100 for how green the immediate surroundings are: the best nearby space
- * carries the score, with a small bonus for having several. Same shape as
- * foodScore, so the two read the same way on a card.
- */
-// Matches foodScore's bonus. At 6 the cap flattened 43% of the country onto
-// 90-100; the nearest space should carry the score, not the count.
-/**
- * Parking terms come from OpenStreetMap's own charging_station nodes, matched
- * to the feed's sites by position.
- *
- * The federal feed has nothing to say about parking: ParkingRestrictions,
- * IsFreeOfCharge and AdditionalInfo are empty on all 19,000 records. OSM
- * mappers tag about 1,500 Swiss chargers with parking:fee and a few dozen with
- * maxstay, and that is all the data there is. A tariff after the free period
- * appears on nobody's node, so it is not offered.
- *
- * The country fits one query — those tags are rare, so the answer is small —
- * and asking per cell would be 300 round trips for the same rows.
- */
-const PARKING_MATCH_M = 75;
-
-async function fetchParking() {
-  const query =
-    `[out:json][timeout:180];area["ISO3166-1"="CH"]->.ch;` +
-    `(nwr["amenity"="charging_station"]["parking:fee"](area.ch);` +
-    `nwr["amenity"="charging_station"]["maxstay"](area.ch););` +
-    `out center tags;`;
-  const { json } = await overpass(query, "parking terms, whole country");
-  return json.elements
-    .map((el) => {
-      const tags = el.tags ?? {};
-      const point = el.center ?? el;
-      const free = toBool(tags["parking:fee"]);
-      const maxStayMinutes = parseMaxStay(tags.maxstay);
-      return {
-        lat: point.lat,
-        lon: point.lon,
-        parking: {
-          ...(free !== undefined && { free: !free }),
-          ...(maxStayMinutes !== undefined && { maxStayMinutes }),
-        },
-      };
-    })
-    .filter((p) => Number.isFinite(p.lat) && Object.keys(p.parking).length > 0);
-}
-
-/**
- * maxstay is free text: "4 hours", "90 minutes", "4h", "unlimited". Minutes,
- * or null for an explicit "no limit"; undefined when the tag says nothing
- * usable, which is different from saying there is no limit.
- */
-function parseMaxStay(value) {
-  if (!value) return undefined;
-  const text = value.trim().toLowerCase();
-  if (text === "unlimited" || text === "no") return null;
-  const m = text.match(/^(\d+(?:\.\d+)?)\s*(h|hours?|hrs?|std|min|minutes?|mins?)$/);
-  if (!m) return undefined;
-  const n = Number(m[1]);
-  return Math.round(/^(h|std)/.test(m[2]) ? n * 60 : n);
-}
-
-function attachParking(sites, points) {
-  let matched = 0;
-  for (const site of sites) {
-    let best = null;
-    let bestDistance = PARKING_MATCH_M;
-    for (const point of points) {
-      const distance = haversineMetres(site, point);
-      if (distance <= bestDistance) {
-        best = point;
-        bestDistance = distance;
-      }
-    }
-    if (best) {
-      site.parking = best.parking;
-      matched += 1;
-    }
-  }
-  return matched;
-}
-
-const GREEN_VARIETY_BONUS = 4;
-const MAX_GREEN_VARIETY = 3;
-
-function attachGreen(sites, areas) {
-  for (const site of sites) {
-    const nearby = [];
-    for (const area of areas) {
-      const distance = metresToBounds(site, area.bounds);
-      if (distance > GREEN_RADIUS_M) continue;
-      // Full marks at the edge of the space, fading to nothing at the radius.
-      const falloff = 1 - distance / GREEN_RADIUS_M;
-      nearby.push({ area, distance, value: area.weight * falloff * 100 });
-    }
-    nearby.sort((a, b) => b.value - a.value);
-
-    if (nearby.length === 0) {
-      site.greenScore = 0;
-      site.green = [];
-      continue;
-    }
-    const variety = Math.min(nearby.length - 1, MAX_GREEN_VARIETY) * GREEN_VARIETY_BONUS;
-    site.greenScore = Math.round(Math.min(nearby[0].value + variety, 100));
-    site.green = nearby.slice(0, MAX_GREEN_PER_STATION).map(({ area, distance }) => ({
-      name: area.name,
-      category: area.category,
-      distanceMetres: Math.round(distance),
-    }));
-  }
-}
-
-function attachFood(sites, food) {
-  for (const site of sites) {
-    const nearby = [];
-    for (const spot of food) {
-      const distance = haversineMetres(site, spot);
-      if (distance <= FOOD_RADIUS_M) nearby.push({ spot, distance });
-    }
-    nearby.sort((a, b) => a.distance - b.distance);
-    site.food = nearby.slice(0, MAX_FOOD_PER_STATION).map(({ spot, distance }) => {
-      const entry = {
-        name: spot.name,
-        category: spot.category,
-        cuisine: spot.cuisine,
-        distanceMetres: Math.round(distance),
-        walkingMinutes: Math.max(1, Math.round(distance / WALK_METRES_PER_MINUTE)),
-      };
-      if (spot.openingHours !== undefined) entry.openingHours = spot.openingHours;
-      if (spot.outdoorSeating !== undefined) entry.outdoorSeating = spot.outdoorSeating;
-      if (spot.takeaway !== undefined) entry.takeaway = spot.takeaway;
-      if (spot.wheelchair !== undefined) entry.wheelchair = spot.wheelchair;
-      return entry;
-    });
-    site.foodCount = nearby.length;
-  }
-}
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function main() {
   const records = await fetchEvseData();
   const sites = buildSites(records);
 
   const places = new Set(sites.map((site) => site.city)).size;
-  const byCell = new Map();
-  for (const site of sites) {
-    const key = cellKey(site);
-    if (!byCell.has(key)) byCell.set(key, []);
-    byCell.get(key).push(site);
-  }
   console.log(
-    `Grouped into ${sites.length} sites across ${places} places, ${byCell.size} map cells`,
+    `Grouped into ${sites.length} sites across ${places} places, ${cellBboxes(sites).length} map cells`,
   );
 
-  const bboxes = [...byCell.values()].map(bboxFor);
-  let foodAvailable = true;
-  if (SKIP_FOOD) {
-    foodAvailable = false;
-    for (const site of sites) {
-      site.food = [];
-      site.foodCount = null;
-    }
-    console.log("Skipping food POIs (SKIP_FOOD set).");
-  } else try {
-    process.stdout.write("Fetching food POIs from Overpass… ");
-    const food = await fetchFood(bboxes);
-    console.log(`${food.length} POIs`);
-    attachFood(sites, food);
-    // A line per place was 1500 lines of scrollback; the coverage rate is the
-    // part worth reading, and a low one is the signal that a fetch went wrong.
-    const withFood = sites.filter((s) => s.foodCount > 0).length;
-    console.log(
-      `  ${withFood}/${sites.length} sites with food within ${FOOD_RADIUS_M} m`,
-    );
-  } catch (error) {
-    foodAvailable = false;
-    for (const site of sites) {
-      site.food = [];
-      site.foodCount = null;
-    }
-    console.log(`\n  Overpass unavailable (${error.message}).`);
-    console.log("  Stations written without food data — re-run to backfill.");
-  }
-
-  let greenAvailable = true;
-  const clearGreen = () => {
-    for (const site of sites) {
-      site.green = [];
-      site.greenScore = null;
-    }
-  };
-  if (SKIP_GREEN) {
-    greenAvailable = false;
-    clearGreen();
-    console.log("Skipping green spaces (SKIP_GREEN set).");
-  } else try {
-    process.stdout.write("Fetching green spaces from Overpass… ");
-    const areas = await fetchGreen(bboxes);
-    console.log(`${areas.length} areas`);
-    attachGreen(sites, areas);
-    const scored = sites.filter((s) => s.greenScore > 0);
-    const mean = scored.reduce((sum, s) => sum + s.greenScore, 0) / (scored.length || 1);
-    console.log(
-      `  ${scored.length}/${sites.length} sites with green space within ` +
-        `${GREEN_RADIUS_M} m (mean score ${Math.round(mean)})`,
-    );
-  } catch (error) {
-    greenAvailable = false;
-    clearGreen();
-    console.log(`\n  Overpass unavailable for green spaces (${error.message}).`);
-    console.log("  Stations written without greenery — re-run to backfill.");
-  }
-
-  if (SKIP_PARKING) {
-    console.log("Skipping parking terms (SKIP_PARKING set).");
-  } else try {
-    process.stdout.write("Fetching parking terms from Overpass… ");
-    const points = await fetchParking();
-    const matched = attachParking(sites, points);
-    console.log(
-      `${points.length} tagged chargers, ${matched}/${sites.length} sites matched within ${PARKING_MATCH_M} m`,
-    );
-  } catch (error) {
-    console.log(`\n  Overpass unavailable for parking terms (${error.message}).`);
-    console.log("  Stations written without parking terms — re-run to backfill.");
+  const result = await enrich(sites, {
+    food: !SKIP_FOOD,
+    green: !SKIP_GREEN,
+    parking: !SKIP_PARKING,
+    parkingScope: "country",
+    overpass: { endpoints: OVERPASS_ENDPOINTS, cache: overpassCache },
+    log: (message) => process.stdout.write(message),
+  });
+  for (const error of result.errors) {
+    console.log(`  Stations written without ${error.split(":")[0]} data — re-run to backfill.`);
   }
 
   const payload = {
-    foodAvailable,
-    greenAvailable,
+    foodAvailable: result.foodAvailable,
+    greenAvailable: result.greenAvailable,
     generatedAt: new Date().toISOString(),
     source: {
       stations: "Swiss Federal Office of Energy (BFE) / ich-tanke-strom, via data.geo.admin.ch",
@@ -849,7 +130,7 @@ async function main() {
     foodRadiusMetres: FOOD_RADIUS_M,
     greenRadiusMetres: GREEN_RADIUS_M,
     stations: sites
-      .map(({ lat, lon, ...rest }) => ({ ...rest, lat, lon }))
+      .map(publishSite)
       .sort((a, b) => a.city.localeCompare(b.city) || a.name.localeCompare(b.name)),
   };
 

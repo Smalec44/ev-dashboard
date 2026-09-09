@@ -101,3 +101,23 @@ test("the stop point slider moves which station counts as 'in the middle'", () =
   // Left alone, the target is halfway: both sit a quarter off and tie.
   assert.equal(middleScore(0.5, "early"), middleScore(0.5, "late"));
 });
+
+test("live status replaces the stall count in the availability score", () => {
+  const eight = station("eight", { stalls: 8 });
+  const full = station("full", {
+    stalls: 8,
+    live: { available: 0, busy: 7, outOfService: 1, unknown: 0, at: "t" },
+  });
+  const half = station("half", {
+    stalls: 8,
+    live: { available: 3, busy: 4, outOfService: 0, unknown: 1, at: "t" },
+  });
+  const availability = (id: string) =>
+    rankStations([eight, full, half], { criteria: ["availability"], foodThreshold: 0 }).find(
+      (r) => r.station.id === id,
+    )!.breakdown.availability;
+  assert.equal(availability("eight"), 100);
+  assert.equal(availability("full"), 0);
+  // Unknown counts as free: 8 − 4 busy − 0 down = 4 of the 8 that mean "plenty".
+  assert.equal(availability("half"), 50);
+});

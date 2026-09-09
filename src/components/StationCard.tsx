@@ -1,6 +1,6 @@
 import { routeViaStationUrl, stationMapUrl } from "@/lib/maps";
 import { openState } from "@/lib/openingHours";
-import type { RankedStation } from "@/lib/ranking";
+import { liveFreeStalls, type RankedStation } from "@/lib/ranking";
 import type { FoodSpot, ParkingTerms, Region } from "@/lib/types";
 
 const CRITERION_LABELS: Record<string, string> = {
@@ -33,6 +33,11 @@ const GREEN_LABELS: Record<string, string> = {
   vineyard: "vineyard",
   allotments: "allotments",
 };
+
+const liveTimeFormat = new Intl.DateTimeFormat("en-CH", {
+  timeStyle: "short",
+  timeZone: "Europe/Zurich",
+});
 
 /** "4 h", "90 min", "1.5 h": whatever reads most naturally for the length. */
 function formatStay(minutes: number): string {
@@ -251,8 +256,26 @@ export function StationCard({
           </dd>
         </div>
         <div>
-          <dt className="text-xs text-muted">Stalls</dt>
-          <dd className="font-medium tabular-nums">{station.stalls}</dd>
+          <dt className="text-xs text-muted">
+            {station.live ? "Stalls · live" : "Stalls"}
+          </dt>
+          <dd className="font-medium tabular-nums">
+            {station.live ? (
+              <span
+                title={`Federal status feed at ${liveTimeFormat.format(new Date(station.live.at))}`}
+              >
+                {liveFreeStalls(station)} of {station.stalls} free
+                {station.live.outOfService > 0 && (
+                  <span className="font-normal text-muted">
+                    {" · "}
+                    {station.live.outOfService} down
+                  </span>
+                )}
+              </span>
+            ) : (
+              station.stalls
+            )}
+          </dd>
         </div>
         <div>
           <dt className="text-xs text-muted">Uptime</dt>

@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { connectorPrices } from "@/data/metrics";
 import { REGIONS, findRegion } from "@/data/regions";
 import {
-  CURATED_STATIONS,
   DEFAULT_RADIUS_KM,
   mergeStations,
   stationsNearRegion,
@@ -31,6 +30,12 @@ const MODE_ONLY = new Set<Criterion>(
 import { RankingControls, type ConnectorFilter } from "./RankingControls";
 import { RegionCombobox } from "./RegionCombobox";
 import { StationCard } from "./StationCard";
+import {
+  applyRefresh,
+  scopeToParams,
+  type RefreshResponse,
+  type RefreshScope,
+} from "@/lib/refresh";
 
 type Mode = "region" | "trip";
 
@@ -56,6 +61,20 @@ const ENDPOINT_MARGIN = 0.1;
 const STOP_AT_MIN = ENDPOINT_MARGIN;
 const STOP_AT_MAX = 1 - ENDPOINT_MARGIN;
 const DEFAULT_STOP_AT = 0.5;
+
+type LiveRefresh =
+  | { state: "idle" }
+  | { state: "busy"; label: string }
+  | { state: "done"; label: string; at: string; count: number; errors: string[] }
+  | { state: "error"; message: string };
+
+/** "food and green", from the "facet: reason" lines a refresh reports. */
+function liveGaps(errors: string[]): string {
+  const facets = errors.map((error) => error.split(":")[0]);
+  return facets.length > 1
+    ? `${facets.slice(0, -1).join(", ")} and ${facets.at(-1)}`
+    : facets[0];
+}
 
 /** Only ever rendered after the fetch resolves, so it never runs on the server. */
 const generatedFormat = new Intl.DateTimeFormat("en-CH", {
@@ -109,15 +128,14 @@ export function Dashboard() {
   const [maxDetour, setMaxDetour] = useState(MAX_DETOUR_KM);
   const [stopAt, setStopAt] = useState(DEFAULT_STOP_AT);
   const [radius, setRadius] = useState(DEFAULT_RADIUS_KM);
-  // The federal feed is ~3 MB, so it is fetched at runtime rather than bundled.
-  // The curated seed stations render immediately and are replaced on arrival.
-  const [stations, setStations] = useState<ChargingStation[]>(CURATED_STATIONS);
+  // The federal feed is ~10 MB, so it is fetched at runtime rather than bundled.
+  // The curated seed stations render immediately and are joined on arrival.
+  const [feedStations, setFeedStations] = useState<ChargingStation[]>([]);
+  const stations = useMemo(() => mergeStations(feedStations), [feedStations]);
   const [feed, setFeed] = useState<"loading" | "ready" | "error">("loading");
-  // When the loaded data was built; null until the first successful fetch,
-  // which also tells the status row whether a failure lost anything.
+  /** When the static build was generated; null until it has loaded. */
   const [generatedAt, setGeneratedAt] = useState<string | null>(null);
-  // Bumped by the refresh button; the effect re-runs and skips the HTTP cache.
-  const [reloads, setReloads] = useState(0);
+  const [live, setLive] = useState<LiveRefresh>({ state: "idle" });
   // "Open now" is read against the venue's own Swiss clock, so it does not
   // depend on where the viewer is — but it does depend on when the render
   // happens, and the server's moment is not the browser's.
@@ -129,16 +147,14 @@ export function Dashboard() {
 
   useEffect(() => {
     let cancelled = false;
-    // A refresh has to reach the server: the file is static and the browser
-    // would otherwise happily hand back the copy it already holds.
-    fetch("/stations.json", { cache: reloads === 0 ? "default" : "reload" })
+    fetch("/stations.json")
       .then((res) => {
         if (!res.ok) throw new Error(`stations.json returned ${res.status}`);
         return res.json() as Promise<StationFeed>;
       })
       .then((data) => {
         if (cancelled) return;
-        setStations(mergeStations(data.stations));
+        setFeedStations(data.stations);
         setGeneratedAt(data.generatedAt);
         setFeed("ready");
       })
@@ -148,12 +164,7 @@ export function Dashboard() {
     return () => {
       cancelled = true;
     };
-  }, [reloads]);
-
-  function refresh() {
-    setFeed("loading");
-    setReloads((count) => count + 1);
-  }
+  }, []);
 
   const region = useMemo(() => findRegion(query), [query]);
   const from = useMemo(() => findRegion(fromQuery), [fromQuery]);
@@ -215,6 +226,56 @@ export function Dashboard() {
       distances: new Map(found.map((e) => [e.station.id, e.distanceKm])),
     };
   }, [mode, region, byConnector, radius]);
+
+  // The live refresh covers exactly what is being searched, so the button is
+  // only offered once the search resolves to somewhere.
+  const scope = useMemo<{ scope: RefreshScope; label: string } | null>(() => {
+    if (mode === "region") {
+      if (!region) return null;
+      return {
+        scope: { mode: "region", city: region.city, lat: region.lat, lon: region.lon, radiusKm: radius },
+        label: region.city,
+      };
+    }
+    if (!trip) return null;
+    return {
+      scope: {
+        mode: "trip",
+        from: { lat: trip.from.lat, lon: trip.from.lon },
+        to: { lat: trip.to.lat, lon: trip.to.lon },
+        maxDetourKm: maxDetour,
+      },
+      label: `${trip.from.city} → ${trip.to.city}`,
+    };
+  }, [mode, region, radius, trip, maxDetour]);
+
+  async function refresh() {
+    if (!scope || live.state === "busy") return;
+    const { label } = scope;
+    setLive({ state: "busy", label });
+    try {
+      const res = await fetch(`/api/refresh?${scopeToParams(scope.scope)}`, {
+        cache: "no-store",
+      });
+      const body = (await res.json()) as RefreshResponse | { error: string };
+      if (!res.ok || "error" in body) {
+        throw new Error("error" in body ? body.error : `refresh returned ${res.status}`);
+      }
+      setFeedStations((current) => applyRefresh(current, body, scope.scope));
+      setLive({
+        state: "done",
+        label,
+        at: body.refreshedAt,
+        count: body.stations.length,
+        errors: body.errors,
+      });
+    } catch (error) {
+      setLive({
+        state: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
 
   const ranked = useMemo(() => {
     if (mode === "trip") {
@@ -431,29 +492,44 @@ export function Dashboard() {
 
       <div
         className={`flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border px-4 py-3 text-xs ${
-          feed === "error" ? "bg-warn-soft text-warn" : "bg-surface text-muted"
+          feed === "error" || live.state === "error"
+            ? "bg-warn-soft text-warn"
+            : "bg-surface text-muted"
         }`}
       >
-        <span>
+        <span className="min-w-0">
           {feed === "loading" &&
-            (generatedAt
-              ? "Refreshing the national charging feed…"
-              : "Loading the national charging feed — showing seed stations meanwhile.")}
+            "Loading the national charging feed — showing seed stations meanwhile. "}
           {feed === "error" &&
-            (generatedAt
-              ? `Refresh failed — still showing the data from ${generatedFormat.format(new Date(generatedAt))}.`
-              : "Could not load the national charging feed. Showing seed stations for the ten original cities only.")}
+            "Could not load the national charging feed. Showing seed stations for the ten original cities only. "}
           {feed === "ready" &&
             generatedAt &&
-            `Charging data generated ${generatedFormat.format(new Date(generatedAt))}.`}
+            `Charging data built ${generatedFormat.format(new Date(generatedAt))}. `}
+          {live.state === "busy" &&
+            `Refreshing ${live.label} from the federal feed, live stall status and OpenStreetMap — up to a minute for a long trip…`}
+          {live.state === "done" && (
+            <>
+              Live for {live.label} since {generatedFormat.format(new Date(live.at))}
+              {" "}({live.count} stations
+              {live.errors.length > 0 &&
+                `; ${liveGaps(live.errors)} unavailable, kept from the build`}
+              ).
+            </>
+          )}
+          {live.state === "error" && `Live refresh failed: ${live.message}`}
         </span>
         <button
           type="button"
           onClick={refresh}
-          disabled={feed === "loading"}
-          className="rounded-lg border border-border bg-surface-muted px-3 py-1.5 font-medium text-foreground transition-colors hover:text-accent disabled:cursor-wait disabled:opacity-60"
+          disabled={live.state === "busy" || !scope}
+          title={
+            scope
+              ? `Re-fetch the federal feed, live stall status and OpenStreetMap for ${scope.label}`
+              : "Pick a place first — the refresh covers the current search area"
+          }
+          className="rounded-lg border border-border bg-surface-muted px-3 py-1.5 font-medium text-foreground transition-colors hover:text-accent disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {feed === "loading" ? "Refreshing…" : feed === "error" ? "Retry" : "Refresh data"}
+          {live.state === "busy" ? "Refreshing…" : "Refresh live data"}
         </button>
       </div>
 
