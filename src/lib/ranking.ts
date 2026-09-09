@@ -39,8 +39,8 @@ export const DEFAULT_REGION_CRITERIA: Criterion[] = ["nearby"];
 export const TRIP_CRITERIA: { id: Criterion; label: string; hint: string }[] = [
   {
     id: "middle",
-    label: "Near the middle",
-    hint: "Closer to halfway between the two places ranks first",
+    label: "Near the stop point",
+    hint: "Closer to where you set the charging break ranks first",
   },
   {
     id: "detour",
@@ -59,10 +59,16 @@ export interface RankingOptions {
   foodThreshold: number;
   /** Extra km per station id; required when "detour" is among the criteria. */
   detourKm?: Map<string, number>;
+  /** The detour slider's value: the km at which the detour score reaches 0. */
+  maxDetourKm?: number;
   /** Position along the route, 0–1; required when "middle" is a criterion. */
   routeProgress?: Map<string, number>;
+  /** Where along the route (0–1) the driver wants to stop; halfway by default. */
+  stopAt?: number;
   /** Km from the searched centre; required when "nearby" is among the criteria. */
   distanceKm?: Map<string, number>;
+  /** The radius slider's value: the km at which the nearby score reaches 0. */
+  radiusKm?: number;
 }
 
 export interface RankedStation {
@@ -122,14 +128,57 @@ export function bestFoodSpot(food: FoodSpot[]): FoodSpot | null {
   );
 }
 
-function normalize(values: number[], higherIsBetter: boolean): number[] {
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  if (max === min) return values.map(() => 100);
-  return values.map((value) => {
-    const t = (value - min) / (max - min);
-    return Math.round((higherIsBetter ? t : 1 - t) * 100);
-  });
+/**
+ * Every criterion scores against a fixed scale, never against the other
+ * stations in the list.
+ *
+ * Scores used to be min-max normalised over whatever the filters had left,
+ * which made them move when the filters did: a DC site scoring 84 among DC
+ * sites dropped to the 50s once AC sites joined the pool and pulled the price
+ * floor down, and then fell out of the top 50 — so switching the connector
+ * from "DC fast" to "All" made a station disappear rather than merely gain
+ * company. A fixed scale means a station's score is a fact about the station,
+ * and the same number appears whichever filter it is seen through.
+ */
+
+/** Anything at or above this is "as fast as it gets" for a car today. */
+const TOP_SPEED_KW = 350;
+/** Slowest useful wall charging; the floor of the log scale. */
+const FLOOR_SPEED_KW = 3.7;
+
+/**
+ * Logarithmic, because that is how the difference feels from the driver's
+ * seat: 11 → 22 kW halves the wait just as 150 → 300 kW does, and a linear
+ * scale would give every AC site a single-digit score and no ordering at all.
+ */
+function speedScore(kw: number): number {
+  if (kw < FLOOR_SPEED_KW) return 0;
+  const t =
+    Math.log(Math.min(kw, TOP_SPEED_KW) / FLOOR_SPEED_KW) /
+    Math.log(TOP_SPEED_KW / FLOOR_SPEED_KW);
+  return Math.round(t * 100);
+}
+
+/** CHF per kWh; the cheapest and dearest public tariffs in the feed's estimates. */
+const CHEAP_PRICE = 0.3;
+const DEAR_PRICE = 0.8;
+
+function priceScore(chfPerKwh: number): number {
+  return Math.round(
+    clamp01(1 - (chfPerKwh - CHEAP_PRICE) / (DEAR_PRICE - CHEAP_PRICE)) * 100,
+  );
+}
+
+/** Effective stalls (stalls × uptime) at which a site counts as always free. */
+const PLENTY_OF_STALLS = 8;
+
+function clamp01(value: number): number {
+  return Math.min(Math.max(value, 0), 1);
+}
+
+/** 100 at the reference point, falling linearly to 0 at `worst`. */
+function fallOff(value: number, worst: number): number {
+  return Math.round(clamp01(1 - value / worst) * 100);
 }
 
 function availabilityValue(station: ChargingStation): number {
@@ -147,48 +196,43 @@ export function rankStations(
 
   const columns: Partial<Record<Criterion, number[]>> = {};
   if (options.criteria.includes("speed")) {
-    columns.speed = normalize(
-      stations.map((s) => s.maxPowerKw),
-      true,
-    );
+    columns.speed = stations.map((s) => speedScore(s.maxPowerKw));
   }
   if (options.criteria.includes("price")) {
-    columns.price = normalize(
-      stations.map((s) => s.pricePerKwh),
-      false,
-    );
+    columns.price = stations.map((s) => priceScore(s.pricePerKwh));
   }
   if (options.criteria.includes("green")) {
     // Stations from a run where the greenery lookup failed score null; they sit
     // at the bottom rather than being dropped, since the site may well be leafy.
-    columns.green = normalize(
-      stations.map((s) => s.greenScore ?? 0),
-      true,
-    );
+    columns.green = stations.map((s) => s.greenScore ?? 0);
   }
   if (options.criteria.includes("availability")) {
-    columns.availability = normalize(stations.map(availabilityValue), true);
+    columns.availability = stations.map((s) =>
+      Math.round(clamp01(availabilityValue(s) / PLENTY_OF_STALLS) * 100),
+    );
   }
   if (options.criteria.includes("detour") && options.detourKm) {
-    const { detourKm } = options;
-    columns.detour = normalize(
-      stations.map((s) => detourKm.get(s.id) ?? 0),
-      false,
+    const { detourKm, maxDetourKm = 1 } = options;
+    columns.detour = stations.map((s) =>
+      fallOff(detourKm.get(s.id) ?? 0, maxDetourKm),
     );
   }
   if (options.criteria.includes("nearby") && options.distanceKm) {
-    const { distanceKm } = options;
-    columns.nearby = normalize(
-      stations.map((s) => distanceKm.get(s.id) ?? 0),
-      false,
+    // A site the feed labels with the searched town is included however far
+    // out it sits, so beyond the radius the score is simply 0.
+    const { distanceKm, radiusKm = 1 } = options;
+    columns.nearby = stations.map((s) =>
+      fallOff(distanceKm.get(s.id) ?? 0, radiusKm),
     );
   }
   if (options.criteria.includes("middle") && options.routeProgress) {
-    const { routeProgress } = options;
-    // Distance from the halfway point: 0 is dead centre, 0.5 is an endpoint.
-    columns.middle = normalize(
-      stations.map((s) => Math.abs((routeProgress.get(s.id) ?? 0.5) - 0.5)),
-      false,
+    const { routeProgress, stopAt = 0.5 } = options;
+    // Distance from the chosen stop point as a fraction of the route. The
+    // slope is fixed at "half the route away scores 0" whatever the target,
+    // so moving the slider shifts the peak without changing what a 10-km
+    // miss costs.
+    columns.middle = stations.map((s) =>
+      fallOff(Math.abs((routeProgress.get(s.id) ?? stopAt) - stopAt), 0.5),
     );
   }
 

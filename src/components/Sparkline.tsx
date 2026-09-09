@@ -10,6 +10,10 @@ export function Sparkline({ points }: { points: TrendPoint[] }) {
   // Scale on complete months only — a part-counted month would otherwise drag
   // the floor down and flatten the variation that actually matters.
   const scaleValues = points.filter((p) => !p.partial).map((p) => p.value);
+  // With nothing settled there is no scale to draw against: min/max would be
+  // ±Infinity and every coordinate NaN, and the area polygon below would read
+  // off the end of an empty array.
+  if (scaleValues.length === 0) return null;
   const min = Math.min(...scaleValues);
   const max = Math.max(...scaleValues);
   const span = max - min || 1;

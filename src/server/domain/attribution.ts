@@ -2,7 +2,7 @@ import type { Attribution } from "./sources";
 
 /**
  * Attribution is a licence obligation, not decoration (cross-cutting rule 5).
- * Served by /api/v1/meta/attribution and rendered in the UI footer.
+ * Rendered in the page footer.
  *
  * BFE data is O-By-Ask: commercial use requires written permission from
  * geoinformation@bfe.admin.ch. That is a human step — flag it, do not assume it.
@@ -45,10 +45,24 @@ export const ATTRIBUTIONS: Record<string, Attribution> = {
   },
 };
 
-export function activeAttributions(enabled: {
-  chargeprice: boolean;
-}): Attribution[] {
-  const active = [ATTRIBUTIONS.bfe, ATTRIBUTIONS.osm, ATTRIBUTIONS.elcom];
+/**
+ * The three sources every render depends on: the federal feed for stations,
+ * OpenStreetMap for the food and greenery around them, and GeoNames for the
+ * town centres the search resolves against. Credit the ones actually in use —
+ * naming a source the page does not draw on is its own kind of wrong, and
+ * ElCom and Chargeprice are still only schema, so they stay behind a flag.
+ */
+const ALWAYS_ACTIVE = [
+  ATTRIBUTIONS.bfe,
+  ATTRIBUTIONS.osm,
+  ATTRIBUTIONS.geonames,
+];
+
+export function activeAttributions(
+  enabled: { elcom?: boolean; chargeprice?: boolean } = {},
+): Attribution[] {
+  const active = [...ALWAYS_ACTIVE];
+  if (enabled.elcom) active.push(ATTRIBUTIONS.elcom);
   if (enabled.chargeprice) active.push(ATTRIBUTIONS.chargeprice);
   return active;
 }

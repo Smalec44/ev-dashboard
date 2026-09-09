@@ -40,6 +40,18 @@ export interface LatLon {
   lon: number;
 }
 
+/**
+ * What OpenStreetMap records about parking at the charger. Sparse by nature:
+ * the federal feed carries nothing on parking, and only mappers who bothered
+ * tagged it. Each field is present only when the tag was.
+ */
+export interface ParkingTerms {
+  /** False means parking is charged on top of the electricity. */
+  free?: boolean;
+  /** Longest permitted stay; null when the tag says explicitly "unlimited". */
+  maxStayMinutes?: number | null;
+}
+
 export interface ChargingStation extends LatLon {
   id: string;
   name: string;
@@ -66,6 +78,8 @@ export interface ChargingStation extends LatLon {
    * "nothing green nearby" — the same distinction `foodCount` draws.
    */
   greenScore?: number | null;
+  /** Absent when no tagged OSM charger sits at this site. */
+  parking?: ParkingTerms;
 }
 
 export interface Region extends LatLon {

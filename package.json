@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --test",
+    "test": "TZ=Europe/Zurich node --import ./scripts/test-resolve.mjs --test",
     "build:data": "node scripts/build-data.mjs",
     "db:up": "docker compose up -d db",
     "db:migrate": "node scripts/migrate.mjs"

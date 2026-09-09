@@ -2,18 +2,35 @@ interface MetricCardProps {
   label: string;
   value: string;
   changePct?: number;
+  /**
+   * Whether a rise is good news. False for the price cards: EV list prices and
+   * per-kWh tariffs going up is the opposite of the sales figure going up, and
+   * colouring both green told the reader the wrong story.
+   */
+  higherIsBetter?: boolean;
   footnote?: string;
 }
 
-function ChangeBadge({ changePct }: { changePct: number }) {
-  const positive = changePct >= 0;
+function ChangeBadge({
+  changePct,
+  higherIsBetter,
+}: {
+  changePct: number;
+  higherIsBetter: boolean;
+}) {
+  const rising = changePct >= 0;
+  const good = rising === higherIsBetter;
   return (
     <span
       className={`text-xs font-medium tabular-nums ${
-        positive ? "text-accent" : "text-warn"
+        good ? "text-accent" : "text-warn"
       }`}
     >
-      {positive ? "▲" : "▼"} {Math.abs(changePct).toFixed(1)}%
+      {/* The arrow carries the direction visually; spell it out for readers
+          that announce the text rather than the glyph. */}
+      <span aria-hidden="true">{rising ? "▲" : "▼"}</span>
+      <span className="sr-only">{rising ? "up" : "down"}</span>{" "}
+      {Math.abs(changePct).toFixed(1)}%
     </span>
   );
 }
@@ -22,6 +39,7 @@ export function MetricCard({
   label,
   value,
   changePct,
+  higherIsBetter = true,
   footnote,
 }: MetricCardProps) {
   return (
@@ -31,7 +49,9 @@ export function MetricCard({
       </div>
       <div className="mt-2 flex items-baseline gap-2">
         <span className="text-2xl font-semibold tabular-nums">{value}</span>
-        {changePct !== undefined && <ChangeBadge changePct={changePct} />}
+        {changePct !== undefined && (
+          <ChangeBadge changePct={changePct} higherIsBetter={higherIsBetter} />
+        )}
       </div>
       {footnote && <p className="mt-1 text-xs text-muted">{footnote}</p>}
     </div>

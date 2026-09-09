@@ -126,3 +126,27 @@ test("PH off still fails closed to unknown even though weekday off is now suppor
 test("SH off still fails closed to unknown", () => {
   assert.equal(openState("Mo-Fr 09:00-18:00; SH off", at(12, 0)), "unknown");
 });
+
+test("hours are read in Swiss time, not the viewer's timezone", () => {
+  // Absolute instants, so this holds whatever timezone the test host is in.
+  // 07:00 UTC is 09:00 in Zurich (CEST) — a 09:00-17:00 spec is open then,
+  // even for a viewer in New York, where it is still 03:00.
+  assert.equal(
+    openState("Mo-Fr 09:00-17:00", new Date("2026-09-09T07:00:00Z")),
+    "open",
+  );
+  // 22:00 UTC is midnight in Zurich, so the same spec is closed — even for a
+  // viewer in New York, where it is 18:00 and would look open on a local clock.
+  assert.equal(
+    openState("Mo-Fr 09:00-17:00", new Date("2026-09-09T22:00:00Z")),
+    "closed",
+  );
+});
+
+test("the Swiss weekday decides the rule, not the viewer's weekday", () => {
+  // 23:00 UTC on Friday is already 01:00 Saturday in Zurich. A Saturday-only
+  // spec must be the one that applies.
+  const instant = new Date("2026-09-11T23:00:00Z");
+  assert.equal(openState("Sa 00:00-04:00", instant), "open");
+  assert.equal(openState("Fr 00:00-04:00", instant), "closed");
+});

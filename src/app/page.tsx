@@ -2,6 +2,7 @@ import { Dashboard } from "@/components/Dashboard";
 import { MetricCard } from "@/components/MetricCard";
 import { Sparkline } from "@/components/Sparkline";
 import { NATIONAL_METRICS } from "@/data/metrics";
+import { activeAttributions } from "@/server/domain/attribution";
 
 const numberFormat = new Intl.NumberFormat("de-CH");
 const chfFormat = new Intl.NumberFormat("de-CH", {
@@ -18,6 +19,7 @@ const dateFormat = new Intl.DateTimeFormat("en-CH", {
 export default function Home() {
   const m = NATIONAL_METRICS;
   const partialMonth = m.monthlyRegistrations.find((point) => point.partial);
+  const attributions = activeAttributions();
 
   return (
     <main className="mx-auto w-full max-w-5xl px-5 py-10">
@@ -43,18 +45,21 @@ export default function Home() {
           label="Average EV price"
           value={chfFormat.format(m.averageEvPriceChf)}
           changePct={m.averageEvPriceChangePct}
+          higherIsBetter={false}
           footnote="New vehicle, list price"
         />
         <MetricCard
           label="AC charging"
           value={`CHF ${m.averageAcPricePerKwh.toFixed(2)}`}
           changePct={m.averageAcPriceChangePct}
+          higherIsBetter={false}
           footnote="Per kWh, national average"
         />
         <MetricCard
           label="DC charging"
           value={`CHF ${m.averageDcPricePerKwh.toFixed(2)}`}
           changePct={m.averageDcPriceChangePct}
+          higherIsBetter={false}
           footnote="Per kWh, national average"
         />
       </div>
@@ -78,9 +83,35 @@ export default function Home() {
         <Dashboard />
       </div>
 
-      <footer className="mt-10 border-t border-border pt-4 text-xs text-muted">
-        Figures are seeded sample data for demonstration, not official
-        statistics.
+      {/*
+        Attribution is a licence term, not a courtesy: the amenity data is
+        ODbL, which requires the credit to be shown wherever the data is. It
+        renders here, server-side, so it is present even when the station feed
+        fetch fails and the page falls back to the curated seed stations.
+      */}
+      <footer className="mt-10 space-y-2 border-t border-border pt-4 text-xs text-muted">
+        <p>
+          National market figures are seeded sample data for demonstration, not
+          official statistics.
+        </p>
+        <ul className="space-y-1">
+          {attributions.map((attribution) => (
+            <li key={attribution.source}>
+              <a
+                href={attribution.url}
+                target="_blank"
+                rel="noreferrer"
+                className="underline decoration-border underline-offset-2 hover:text-foreground"
+              >
+                {attribution.text}
+              </a>{" "}
+              <span className="text-muted">({attribution.licence})</span>
+              {attribution.commercialUseRestricted && (
+                <span className="text-warn"> · commercial use restricted</span>
+              )}
+            </li>
+          ))}
+        </ul>
       </footer>
     </main>
   );

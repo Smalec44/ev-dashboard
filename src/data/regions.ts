@@ -232,7 +232,7 @@ export const REGIONS: Region[] = [
   { slug: "ollon", city: "Ollon", canton: "VD", aliases: [], lat: 46.2952, lon: 6.9931 },
   { slug: "minusio", city: "Minusio", canton: "TI", aliases: [], lat: 46.1777, lon: 8.8147 },
   { slug: "zermatt", city: "Zermatt", canton: "VS", aliases: [], lat: 46.02, lon: 7.7486 },
-  { slug: "bagnes", city: "Bagnes", canton: "VS", aliases: [], lat: 46.0833, lon: 7.2167 },
+  { slug: "bagnes", city: "Bagnes", canton: "VS", aliases: ["Val de Bagnes", "Le Châble", "Châble"], lat: 46.0833, lon: 7.2167 },
   { slug: "saanen", city: "Saanen", canton: "BE", aliases: ["Saanen-Gstaad"], lat: 46.4895, lon: 7.26 },
   { slug: "crissier", city: "Crissier", canton: "VD", aliases: [], lat: 46.5459, lon: 6.5757 },
   { slug: "buchs-ag", city: "Buchs", canton: "AG", aliases: ["Buchs AG"], lat: 47.3936, lon: 8.0823 },

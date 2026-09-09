@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { connectorPrices } from "@/data/metrics";
-import { REGIONS, findRegion, matchRegions } from "@/data/regions";
+import { REGIONS, findRegion } from "@/data/regions";
 import {
   CURATED_STATIONS,
   DEFAULT_RADIUS_KM,
@@ -11,7 +11,7 @@ import {
   type StationFeed,
 } from "@/data/stations";
 import { detourKm as computeDetour, distanceKm, routeProgress } from "@/lib/geo";
-import type { ChargingStation, Region } from "@/lib/types";
+import type { ChargingStation } from "@/lib/types";
 import {
   DEFAULT_CRITERIA,
   DEFAULT_FOOD_THRESHOLD,
@@ -29,6 +29,7 @@ const MODE_ONLY = new Set<Criterion>(
   [...TRIP_CRITERIA, ...REGION_CRITERIA].map((c) => c.id),
 );
 import { RankingControls, type ConnectorFilter } from "./RankingControls";
+import { RegionCombobox } from "./RegionCombobox";
 import { StationCard } from "./StationCard";
 
 type Mode = "region" | "trip";
@@ -48,48 +49,13 @@ const MAX_RADIUS_KM = 25;
  */
 const RESULT_LIMIT = 50;
 
-/**
- * Datalist entries, built once. Names shared across cantons (Buchs SG/AG,
- * Wohlen AG/BE, …) are qualified so picking one is unambiguous; findRegion
- * folds the punctuation away and matches the canton-qualified alias.
- */
-// Folded the same way findRegion folds, so pairs that differ only by diacritic
-// (Brugg AG vs Brügg BE) count as ambiguous too — lowercasing alone misses them.
-const foldCity = (value: string) =>
-  value.toLowerCase().normalize("NFD").replace(/[^a-z]/g, "");
-
-const AMBIGUOUS_CITIES = new Set(
-  REGIONS.map((r) => foldCity(r.city)).filter(
-    (city, i, all) => all.indexOf(city) !== i,
-  ),
-);
-
-function optionValue(region: Region): string {
-  return AMBIGUOUS_CITIES.has(foldCity(region.city))
-    ? `${region.city} (${region.canton})`
-    : region.city;
-}
-
-/**
- * One datalist per input, holding only the current query's best matches.
- * A shared list of all 1000 towns made Chrome render a full-height popup
- * detached from the field as soon as a single letter matched hundreds.
- */
-function RegionOptions({ id, query }: { id: string; query: string }) {
-  const options = useMemo(() => matchRegions(query), [query]);
-  return (
-    <datalist id={id}>
-      {options.map((region) => (
-        <option key={region.slug} value={optionValue(region)}>
-          {region.canton}
-        </option>
-      ))}
-    </datalist>
-  );
-}
-
 /** Fraction of the route at each end treated as "still at the endpoint". */
 const ENDPOINT_MARGIN = 0.1;
+
+/** The break slider stays inside the margins: a stop at 0% is not a stop. */
+const STOP_AT_MIN = ENDPOINT_MARGIN;
+const STOP_AT_MAX = 1 - ENDPOINT_MARGIN;
+const DEFAULT_STOP_AT = 0.5;
 
 /** How often "open now" is re-checked against the clock. */
 const CLOCK_REFRESH_MS = 60_000;
@@ -117,7 +83,7 @@ function getClockSnapshot(): Date | null {
   return clockSnapshot;
 }
 
-/** The server has no viewer clock to trust, so it renders as "unknown". */
+/** No clock before hydration, so open/closed renders as "unknown" on the server. */
 function getServerClockSnapshot(): Date | null {
   return null;
 }
@@ -134,12 +100,15 @@ export function Dashboard() {
   const [threshold, setThreshold] = useState(DEFAULT_FOOD_THRESHOLD);
   const [connector, setConnector] = useState<ConnectorFilter>("ALL");
   const [maxDetour, setMaxDetour] = useState(MAX_DETOUR_KM);
+  const [stopAt, setStopAt] = useState(DEFAULT_STOP_AT);
   const [radius, setRadius] = useState(DEFAULT_RADIUS_KM);
   // The federal feed is ~3 MB, so it is fetched at runtime rather than bundled.
   // The curated seed stations render immediately and are replaced on arrival.
   const [stations, setStations] = useState<ChargingStation[]>(CURATED_STATIONS);
   const [feed, setFeed] = useState<"loading" | "ready" | "error">("loading");
-  // "Open now" depends on the viewer's clock, which the server doesn't have.
+  // "Open now" is read against the venue's own Swiss clock, so it does not
+  // depend on where the viewer is — but it does depend on when the render
+  // happens, and the server's moment is not the browser's.
   // useSyncExternalStore serves the server snapshot (null) through the first
   // client render too, so hydration always matches; the real clock only
   // appears once subscribed, and re-renders on its own schedule rather than
@@ -208,6 +177,8 @@ export function Dashboard() {
     const usedEndpoints = middle.length === 0;
 
     return {
+      from,
+      to,
       directKm,
       detours,
       progress,
@@ -232,7 +203,9 @@ export function Dashboard() {
         criteria,
         foodThreshold: threshold,
         detourKm: trip.detours,
+        maxDetourKm: maxDetour,
         routeProgress: trip.progress,
+        stopAt,
       });
     }
     if (!nearby) return [];
@@ -240,8 +213,9 @@ export function Dashboard() {
       criteria,
       foodThreshold: threshold,
       distanceKm: nearby.distances,
+      radiusKm: radius,
     });
-  }, [mode, trip, nearby, criteria, threshold]);
+  }, [mode, trip, nearby, criteria, threshold, maxDetour, radius, stopAt]);
 
   const prices = useMemo(
     () => connectorPrices(ranked.map((r) => r.station)),
@@ -258,6 +232,11 @@ export function Dashboard() {
         ? [...base, ...DEFAULT_TRIP_CRITERIA]
         : [...base, ...DEFAULT_REGION_CRITERIA];
     });
+  }
+
+  function swapDirection() {
+    setFromQuery(toQuery);
+    setToQuery(fromQuery);
   }
 
   function toggleCriterion(id: Criterion) {
@@ -290,69 +269,40 @@ export function Dashboard() {
         </div>
 
         {mode === "region" ? (
-          <div>
-            <label
-              htmlFor="region"
-              className="text-xs font-medium uppercase tracking-wide text-muted"
-            >
-              Search region or city
-            </label>
-            <RegionOptions id="regions-single" query={query} />
-            <input
-              id="region"
-              list="regions-single"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="e.g. Basel, Lausanne, TI"
-              className="mt-2 w-full rounded-lg border border-border bg-background px-3 py-2 text-base outline-none focus:border-accent"
-            />
-          </div>
+          <RegionCombobox
+            id="region"
+            label="Search region or city"
+            value={query}
+            onChange={setQuery}
+            placeholder="e.g. Basel, Lausanne, TI"
+          />
         ) : (
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div>
-              <label
-                htmlFor="from"
-                className="text-xs font-medium uppercase tracking-wide text-muted"
-              >
-                From
-              </label>
-              <RegionOptions id="regions-from" query={fromQuery} />
-              <input
-                id="from"
-                list="regions-from"
-                value={fromQuery}
-                onChange={(event) => setFromQuery(event.target.value)}
-                placeholder="e.g. Chur, Sion, Bellinzona"
-                aria-invalid={fromQuery.trim() !== "" && from === null}
-                className={`mt-2 w-full rounded-lg border bg-background px-3 py-2 text-base outline-none focus:border-accent ${
-                  fromQuery.trim() !== "" && from === null
-                    ? "border-warn"
-                    : "border-border"
-                }`}
-              />
-            </div>
-            <div>
-              <label
-                htmlFor="to"
-                className="text-xs font-medium uppercase tracking-wide text-muted"
-              >
-                To
-              </label>
-              <RegionOptions id="regions-to" query={toQuery} />
-              <input
-                id="to"
-                list="regions-to"
-                value={toQuery}
-                onChange={(event) => setToQuery(event.target.value)}
-                placeholder="e.g. Lugano, Genève, St. Gallen"
-                aria-invalid={toQuery.trim() !== "" && to === null}
-                className={`mt-2 w-full rounded-lg border bg-background px-3 py-2 text-base outline-none focus:border-accent ${
-                  toQuery.trim() !== "" && to === null
-                    ? "border-warn"
-                    : "border-border"
-                }`}
-              />
-            </div>
+          <div className="grid gap-4 sm:grid-cols-[1fr_auto_1fr]">
+            <RegionCombobox
+              id="from"
+              label="From"
+              value={fromQuery}
+              onChange={setFromQuery}
+              placeholder="e.g. Chur, Sion, Bellinzona"
+              invalid={fromQuery.trim() !== "" && from === null}
+            />
+            <button
+              type="button"
+              onClick={swapDirection}
+              title="Swap direction"
+              aria-label="Swap direction"
+              className="mt-2 self-end rounded-lg border border-border bg-surface-muted px-3 py-2 text-base text-muted transition-colors hover:text-foreground sm:mt-0"
+            >
+              <span aria-hidden="true">⇄</span>
+            </button>
+            <RegionCombobox
+              id="to"
+              label="To"
+              value={toQuery}
+              onChange={setToQuery}
+              placeholder="e.g. Lugano, Genève, St. Gallen"
+              invalid={toQuery.trim() !== "" && to === null}
+            />
           </div>
         )}
 
@@ -383,6 +333,40 @@ export function Dashboard() {
               Around the town centre. Stations the feed already labels with this
               town are always included, however far out they sit.
             </p>
+          </div>
+        )}
+
+        {mode === "trip" && (
+          <div className="mt-5">
+            <div className="flex items-center justify-between gap-3">
+              <label
+                htmlFor="stop-at"
+                className="text-xs font-medium uppercase tracking-wide text-muted"
+              >
+                Charging break
+              </label>
+              <span className="text-sm font-medium tabular-nums">
+                {trip
+                  ? `≈ ${Math.round(stopAt * trip.directKm)} km after ${trip.from.city}`
+                  : `${Math.round(stopAt * 100)}% of the way`}
+              </span>
+            </div>
+            <input
+              id="stop-at"
+              type="range"
+              min={STOP_AT_MIN}
+              max={STOP_AT_MAX}
+              step={0.01}
+              value={stopAt}
+              onChange={(event) => setStopAt(Number(event.target.value))}
+              aria-valuetext={`${Math.round(stopAt * 100)}% of the way`}
+              className="mt-2 w-full accent-accent"
+            />
+            <div className="mt-1 flex justify-between text-xs text-muted">
+              <span>{from?.city ?? "Start"}</span>
+              <span className="tabular-nums">{Math.round(stopAt * 100)}%</span>
+              <span>{to?.city ?? "End"}</span>
+            </div>
           </div>
         )}
 
@@ -527,6 +511,7 @@ export function Dashboard() {
                   routeProgress={trip?.progress.get(item.station.id)}
                   distanceKm={nearby?.distances.get(item.station.id)}
                   searchedCity={region?.city}
+                  route={trip ? { from: trip.from, to: trip.to } : undefined}
                   now={now}
                 />
               ))}

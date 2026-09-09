@@ -34,18 +34,20 @@ const OVERPASS_ENDPOINTS = (
   .filter(Boolean);
 
 // Derived from REGIONS in src/data/regions.ts rather than duplicated, so the
-// set of cities we pull stations for cannot drift from the set the UI can search.
+// city names we canonicalise to cannot drift from the ones the UI can search.
 const REGIONS_TS = resolve(HERE, "../src/data/regions.ts");
 const CITY_LOOKUP = new Map();
+const REGION_POINTS = [];
 {
   // Operators write whatever city name they like into the feed — often the
   // German exonym ("Sitten" for Sion). Aliases are accepted as feed keys and
   // normalised to the region's canonical name, so both spellings land together.
   const norm = (v) => v.toLowerCase().normalize("NFD").replace(/[^a-z0-9]/g, "");
   const line =
-    /\{ slug: "[^"]+", city: "([^"]+)", canton: "([A-Z]{2})", aliases: \[([^\]]*)\]/g;
+    /\{ slug: "[^"]+", city: "([^"]+)", canton: "([A-Z]{2})", aliases: \[([^\]]*)\], lat: (-?[\d.]+), lon: (-?[\d.]+) \}/g;
   for (const m of readFileSync(REGIONS_TS, "utf8").matchAll(line)) {
-    const [, city, canton, rawAliases] = m;
+    const [, city, canton, rawAliases, lat, lon] = m;
+    REGION_POINTS.push({ city, canton, lat: Number(lat), lon: Number(lon) });
     const keys = [city, ...(rawAliases.match(/"((?:[^"\\]|\\.)*)"/g) ?? []).map((a) => JSON.parse(a))];
     for (const key of keys) {
       // First writer wins: REGIONS is population-ordered, so shared names
@@ -60,6 +62,38 @@ const CITY_LOOKUP = new Map();
 
 const lookupCity = (name) =>
   CITY_LOOKUP.get(name.toLowerCase().normalize("NFD").replace(/[^a-z0-9]/g, ""));
+
+/**
+ * Nearest town centre from REGIONS, for a station whose city the list does not
+ * know. REGIONS stops at ~1200 inhabitants, so the feed is full of perfectly
+ * real places it has never heard of — merged municipalities the feed names by
+ * their new name ("Val de Bagnes", where the list still says "Bagnes"), city
+ * quarters ("Le Lignon" in Vernier), resorts ("Verbier" is in the list but the
+ * chargers there are filed under the municipality) and plain hamlets.
+ *
+ * Only the canton is taken from the match: it is required by the schema but
+ * shown nowhere, and over the charge points whose city IS in the list the
+ * nearest centre names the right canton 96% of the time — the rest are
+ * cross-border neighbours (Basel/Birsfelden) or cases where the name lookup
+ * itself picked the wrong twin (Muri BE vs AG) and the coordinates are righter.
+ */
+function nearestRegion(point) {
+  let best = REGION_POINTS[0];
+  let bestKm = Infinity;
+  for (const region of REGION_POINTS) {
+    const km = distanceKmApprox(point, region);
+    if (km < bestKm) {
+      bestKm = km;
+      best = region;
+    }
+  }
+  return best;
+}
+
+/** Equirectangular, at 47°N. Only ever used to rank candidates against each other. */
+function distanceKmApprox(a, b) {
+  return Math.hypot((a.lat - b.lat) * 111, (a.lon - b.lon) * 76);
+}
 
 /**
  * On-disk response cache.
@@ -150,6 +184,7 @@ const OVERPASS_ROUNDS = 4;
 const OVERPASS_BACKOFF_MS = 20_000;
 
 const SKIP_GREEN = process.env.SKIP_GREEN === "1" || process.argv.includes("--no-green");
+const SKIP_PARKING = process.env.SKIP_PARKING === "1" || process.argv.includes("--no-parking");
 
 /**
  * How much each kind of green space is worth to someone waiting at a charger.
@@ -275,14 +310,29 @@ function buildSites(records) {
   const sites = new Map();
 
   for (const record of records) {
-    const rawCity = record.Address?.City;
-    const match = rawCity ? lookupCity(rawCity) : undefined;
-    if (!match) continue;
-    const city = match.city;
     if (record.Accessibility === "Restricted access") continue;
 
     const coords = parseCoords(record);
     if (!coords) continue;
+
+    /*
+     * The city is a label, not a filter. Requiring it to be a REGIONS name
+     * dropped 3019 of 11702 sites — a quarter of the country's public chargers,
+     * Verbier's included — because the feed spells places in ways a list of the
+     * 1000 largest municipalities cannot cover. The UI finds stations by radius
+     * around a town centre anyway, so an unrecognised name costs nothing:
+     * canonicalise it when we can, keep the operator's own spelling when we
+     * cannot, and let geography do the rest.
+     */
+    const rawCity = record.Address?.City?.trim();
+    const match = rawCity ? lookupCity(rawCity) : undefined;
+    // Some records carry a placeholder ("-") or a stray address fragment
+    // ("/ West") where the city should be; anything not starting with a letter
+    // is not a place name, so let the coordinates answer instead.
+    const named = rawCity && /^\p{L}/u.test(rawCity) ? rawCity : null;
+    const fallback = match ? null : nearestRegion(coords);
+    const city = match?.city ?? named ?? fallback.city;
+    const canton = match?.canton ?? fallback.canton;
 
     const key = record.ChargingStationId || record.EvseID;
     const facilities = record.ChargingFacilities ?? [];
@@ -307,8 +357,8 @@ function buildSites(records) {
       name: stationName(record),
       operator: record.operator ?? "Unknown",
       city,
-      canton: match.canton,
-      address: [record.Address.Street, record.Address.PostalCode, city]
+      canton,
+      address: [record.Address?.Street, record.Address?.PostalCode, city]
         .filter(Boolean)
         .join(", "),
       // NB: Accessibility describes access, not cost. "Free publicly accessible"
@@ -343,6 +393,29 @@ function buildSites(records) {
       food: [],
     };
   });
+}
+
+/**
+ * Overpass boxes are grouped by geography, not by city name.
+ *
+ * The name is the operator's free text: 26 sites simply say "Schweiz", and
+ * Buchs, Marbach and Bürglen each name several places a hundred kilometres
+ * apart. Grouping on it produced one box of 24,700 km² and 103,000 km² of box
+ * in all — for a country of 41,000 — which is both a lot of POIs downloaded
+ * twice and exactly the shape of query Overpass answers with a 504.
+ *
+ * A fixed grid on the coordinates has neither problem: every box is about a
+ * cell wide, and the total tracks where the chargers actually are. Cells are
+ * ~11 km on both sides at Swiss latitudes. BBOX_PAD_DEG is far wider than the
+ * 400 m search radius, so a site against a cell edge still sees its POIs.
+ */
+const CELL_LAT_DEG = 0.1;
+const CELL_LON_DEG = 0.15;
+
+function cellKey(site) {
+  const row = Math.floor(site.lat / CELL_LAT_DEG);
+  const col = Math.floor(site.lon / CELL_LON_DEG);
+  return `${row}:${col}`;
 }
 
 function bboxFor(sites) {
@@ -541,6 +614,81 @@ function metresToBounds(point, b) {
  */
 // Matches foodScore's bonus. At 6 the cap flattened 43% of the country onto
 // 90-100; the nearest space should carry the score, not the count.
+/**
+ * Parking terms come from OpenStreetMap's own charging_station nodes, matched
+ * to the feed's sites by position.
+ *
+ * The federal feed has nothing to say about parking: ParkingRestrictions,
+ * IsFreeOfCharge and AdditionalInfo are empty on all 19,000 records. OSM
+ * mappers tag about 1,500 Swiss chargers with parking:fee and a few dozen with
+ * maxstay, and that is all the data there is. A tariff after the free period
+ * appears on nobody's node, so it is not offered.
+ *
+ * The country fits one query — those tags are rare, so the answer is small —
+ * and asking per cell would be 300 round trips for the same rows.
+ */
+const PARKING_MATCH_M = 75;
+
+async function fetchParking() {
+  const query =
+    `[out:json][timeout:180];area["ISO3166-1"="CH"]->.ch;` +
+    `(nwr["amenity"="charging_station"]["parking:fee"](area.ch);` +
+    `nwr["amenity"="charging_station"]["maxstay"](area.ch););` +
+    `out center tags;`;
+  const { json } = await overpass(query, "parking terms, whole country");
+  return json.elements
+    .map((el) => {
+      const tags = el.tags ?? {};
+      const point = el.center ?? el;
+      const free = toBool(tags["parking:fee"]);
+      const maxStayMinutes = parseMaxStay(tags.maxstay);
+      return {
+        lat: point.lat,
+        lon: point.lon,
+        parking: {
+          ...(free !== undefined && { free: !free }),
+          ...(maxStayMinutes !== undefined && { maxStayMinutes }),
+        },
+      };
+    })
+    .filter((p) => Number.isFinite(p.lat) && Object.keys(p.parking).length > 0);
+}
+
+/**
+ * maxstay is free text: "4 hours", "90 minutes", "4h", "unlimited". Minutes,
+ * or null for an explicit "no limit"; undefined when the tag says nothing
+ * usable, which is different from saying there is no limit.
+ */
+function parseMaxStay(value) {
+  if (!value) return undefined;
+  const text = value.trim().toLowerCase();
+  if (text === "unlimited" || text === "no") return null;
+  const m = text.match(/^(\d+(?:\.\d+)?)\s*(h|hours?|hrs?|std|min|minutes?|mins?)$/);
+  if (!m) return undefined;
+  const n = Number(m[1]);
+  return Math.round(/^(h|std)/.test(m[2]) ? n * 60 : n);
+}
+
+function attachParking(sites, points) {
+  let matched = 0;
+  for (const site of sites) {
+    let best = null;
+    let bestDistance = PARKING_MATCH_M;
+    for (const point of points) {
+      const distance = haversineMetres(site, point);
+      if (distance <= bestDistance) {
+        best = point;
+        bestDistance = distance;
+      }
+    }
+    if (best) {
+      site.parking = best.parking;
+      matched += 1;
+    }
+  }
+  return matched;
+}
+
 const GREEN_VARIETY_BONUS = 4;
 const MAX_GREEN_VARIETY = 3;
 
@@ -602,15 +750,19 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function main() {
   const records = await fetchEvseData();
   const sites = buildSites(records);
-  console.log(`Grouped into ${sites.length} sites across ${CITY_LOOKUP.size} name keys`);
 
-  const byCity = new Map();
+  const places = new Set(sites.map((site) => site.city)).size;
+  const byCell = new Map();
   for (const site of sites) {
-    if (!byCity.has(site.city)) byCity.set(site.city, []);
-    byCity.get(site.city).push(site);
+    const key = cellKey(site);
+    if (!byCell.has(key)) byCell.set(key, []);
+    byCell.get(key).push(site);
   }
+  console.log(
+    `Grouped into ${sites.length} sites across ${places} places, ${byCell.size} map cells`,
+  );
 
-  const bboxes = [...byCity.values()].map(bboxFor);
+  const bboxes = [...byCell.values()].map(bboxFor);
   let foodAvailable = true;
   if (SKIP_FOOD) {
     foodAvailable = false;
@@ -624,10 +776,12 @@ async function main() {
     const food = await fetchFood(bboxes);
     console.log(`${food.length} POIs`);
     attachFood(sites, food);
-    for (const [city, citySites] of byCity) {
-      const withFood = citySites.filter((s) => s.foodCount > 0).length;
-      console.log(`  ${city}: ${withFood}/${citySites.length} sites with food nearby`);
-    }
+    // A line per place was 1500 lines of scrollback; the coverage rate is the
+    // part worth reading, and a low one is the signal that a fetch went wrong.
+    const withFood = sites.filter((s) => s.foodCount > 0).length;
+    console.log(
+      `  ${withFood}/${sites.length} sites with food within ${FOOD_RADIUS_M} m`,
+    );
   } catch (error) {
     foodAvailable = false;
     for (const site of sites) {
@@ -667,6 +821,20 @@ async function main() {
     console.log("  Stations written without greenery — re-run to backfill.");
   }
 
+  if (SKIP_PARKING) {
+    console.log("Skipping parking terms (SKIP_PARKING set).");
+  } else try {
+    process.stdout.write("Fetching parking terms from Overpass… ");
+    const points = await fetchParking();
+    const matched = attachParking(sites, points);
+    console.log(
+      `${points.length} tagged chargers, ${matched}/${sites.length} sites matched within ${PARKING_MATCH_M} m`,
+    );
+  } catch (error) {
+    console.log(`\n  Overpass unavailable for parking terms (${error.message}).`);
+    console.log("  Stations written without parking terms — re-run to backfill.");
+  }
+
   const payload = {
     foodAvailable,
     greenAvailable,
@@ -675,6 +843,7 @@ async function main() {
       stations: "Swiss Federal Office of Energy (BFE) / ich-tanke-strom, via data.geo.admin.ch",
       food: "OpenStreetMap contributors, via Overpass API (ODbL)",
       green: "OpenStreetMap contributors, via Overpass API (ODbL)",
+      parking: "OpenStreetMap contributors, via Overpass API (ODbL)",
       pricing: "Estimated per-operator tariffs — not from the federal feed",
     },
     foodRadiusMetres: FOOD_RADIUS_M,

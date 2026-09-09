@@ -1,13 +1,14 @@
+import { routeViaStationUrl, stationMapUrl } from "@/lib/maps";
 import { openState } from "@/lib/openingHours";
 import type { RankedStation } from "@/lib/ranking";
-import type { FoodSpot } from "@/lib/types";
+import type { FoodSpot, ParkingTerms, Region } from "@/lib/types";
 
 const CRITERION_LABELS: Record<string, string> = {
   speed: "Speed",
   price: "Price",
   availability: "Availability",
   detour: "Detour",
-  middle: "Middle",
+  middle: "Stop point",
   nearby: "Nearby",
   green: "Green",
 };
@@ -33,6 +34,24 @@ const GREEN_LABELS: Record<string, string> = {
   allotments: "allotments",
 };
 
+/** "4 h", "90 min", "1.5 h": whatever reads most naturally for the length. */
+function formatStay(minutes: number): string {
+  if (minutes < 60) return `${minutes} min`;
+  const hours = minutes / 60;
+  return `${Number.isInteger(hours) ? hours : hours.toFixed(1)} h`;
+}
+
+function ParkingTermsText({ parking }: { parking: ParkingTerms }) {
+  const parts: string[] = [];
+  if (parking.free === true) parts.push("free");
+  if (parking.free === false) parts.push("paid");
+  if (parking.maxStayMinutes === null) parts.push("no time limit");
+  else if (parking.maxStayMinutes !== undefined) {
+    parts.push(`max ${formatStay(parking.maxStayMinutes)}`);
+  }
+  return <>{parts.join(" · ")}</>;
+}
+
 function Stars({ rating }: { rating: number }) {
   return (
     <span className="tabular-nums text-muted">
@@ -45,8 +64,10 @@ function FoodRow({ spot, now }: { spot: FoodSpot; now: Date | null }) {
   // Rating and price level only exist on hand-curated spots; OSM supplies
   // neither, so each is rendered only where the data is actually present.
   const descriptor = spot.cuisine ?? spot.category ?? null;
-  // "now" is null until the client mounts — the server has no clock worth
-  // trusting for the viewer's timezone. Open/closed only ever appears after
+  // "now" is null until the client mounts. Hours resolve in Swiss time, so the
+  // viewer's timezone no longer comes into it, but the server and the browser
+  // still read the clock at different moments — a venue closing between the
+  // two renders would be a hydration mismatch. Open/closed appears only after
   // hydration, so the first client render still matches the server's.
   const state = now ? openState(spot.openingHours, now) : "unknown";
 
@@ -108,6 +129,7 @@ export function StationCard({
   routeProgress,
   distanceKm,
   searchedCity,
+  route,
   now,
 }: {
   ranked: RankedStation;
@@ -119,6 +141,8 @@ export function StationCard({
   distanceKm?: number;
   /** The town that was searched, so results from a neighbour can say so. */
   searchedCity?: string;
+  /** The trip's endpoints, in trip mode: enables the "route via here" link. */
+  route?: { from: Region; to: Region };
   /** Client clock for "open now", null until mount (see Dashboard). */
   now: Date | null;
 }) {
@@ -136,7 +160,16 @@ export function StationCard({
             <h3 className="truncate text-base font-semibold">{station.name}</h3>
           </div>
           <p className="mt-0.5 text-sm text-muted">
-            {station.operator} · {station.address}
+            {station.operator} ·{" "}
+            <a
+              href={stationMapUrl(station)}
+              target="_blank"
+              rel="noreferrer"
+              title="Open in Google Maps"
+              className="underline decoration-border underline-offset-2 hover:text-foreground"
+            >
+              {station.address}
+            </a>
           </p>
           {distanceKm !== undefined && (
             <p className="mt-1.5 flex flex-wrap gap-1.5">
@@ -167,17 +200,30 @@ export function StationCard({
             </p>
           )}
         </div>
-        <div className="shrink-0 rounded-lg bg-accent-soft px-3 py-1.5 text-center">
-          <div className="text-lg font-semibold tabular-nums text-accent">
-            {score}
-          </div>
-          <div className="text-[10px] uppercase tracking-wide text-muted">
-            match
+        <div className="flex shrink-0 items-start gap-2">
+          {route && (
+            <a
+              href={routeViaStationUrl(route.from, station, route.to)}
+              target="_blank"
+              rel="noreferrer"
+              title={`Driving directions ${route.from.city} → ${station.name} → ${route.to.city} in Google Maps`}
+              className="rounded-lg border border-border bg-surface-muted px-3 py-2 text-xs font-medium transition-colors hover:text-accent"
+            >
+              Route via here <span aria-hidden="true">↗</span>
+            </a>
+          )}
+          <div className="rounded-lg bg-accent-soft px-3 py-1.5 text-center">
+            <div className="text-lg font-semibold tabular-nums text-accent">
+              {score}
+            </div>
+            <div className="text-[10px] uppercase tracking-wide text-muted">
+              match
+            </div>
           </div>
         </div>
       </div>
 
-      <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-2 text-sm sm:grid-cols-4">
+      <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-2 text-sm sm:grid-cols-3 lg:grid-cols-5">
         <div>
           <dt className="text-xs text-muted">Type</dt>
           <dd className="font-medium">
@@ -220,6 +266,21 @@ export function StationCard({
               </span>
             ) : (
               `${station.reliabilityPct}%`
+            )}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-xs text-muted">Parking</dt>
+          <dd className="font-medium">
+            {station.parking ? (
+              <ParkingTermsText parking={station.parking} />
+            ) : (
+              <span
+                className="text-muted"
+                title="Neither the federal feed nor OpenStreetMap records parking terms here"
+              >
+                —
+              </span>
             )}
           </dd>
         </div>

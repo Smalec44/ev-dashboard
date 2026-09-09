@@ -32,6 +32,43 @@ export type OpenState = "open" | "closed" | "unknown";
 /** Date#getDay() convention: 0 = Sunday. */
 type Day = number;
 
+/**
+ * Opening hours in the feed are the venue's own local time, and every venue
+ * here is in Switzerland. Reading them against the viewer's clock told anyone
+ * outside CET the wrong thing: a Zurich cafe genuinely open at 09:00 read as
+ * "closed now" to a viewer in New York. Resolve the instant in Swiss time.
+ */
+const VENUE_TIME_ZONE = "Europe/Zurich";
+
+/** Built once: constructing a formatter per call is the expensive part. */
+const venueClock = new Intl.DateTimeFormat("en-GB", {
+  timeZone: VENUE_TIME_ZONE,
+  weekday: "short",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+});
+
+const WEEKDAY_CODES: Record<string, Day> = {
+  Sun: 0,
+  Mon: 1,
+  Tue: 2,
+  Wed: 3,
+  Thu: 4,
+  Fri: 5,
+  Sat: 6,
+};
+
+/** The weekday and wall-clock minute at the venue, for an absolute instant. */
+function venueTime(now: Date): { day: Day; minutes: number } | null {
+  const parts = venueClock.formatToParts(now);
+  const value = (type: string) =>
+    parts.find((part) => part.type === type)?.value ?? "";
+  const day = WEEKDAY_CODES[value("weekday")];
+  if (day === undefined) return null;
+  return { day, minutes: Number(value("hour")) * 60 + Number(value("minute")) };
+}
+
 const DAY_CODES: Record<string, Day> = {
   Su: 0,
   Mo: 1,
@@ -202,8 +239,9 @@ export function openState(spec: string | undefined, now: Date): OpenState {
     for (const interval of parsed.spill) dayIntervals.get(interval.day)!.push(interval);
   }
 
-  const day = now.getDay();
-  const minutes = now.getHours() * 60 + now.getMinutes();
+  const at = venueTime(now);
+  if (at === null) return "unknown";
+  const { day, minutes } = at;
   const isOpen = (dayIntervals.get(day) ?? []).some(
     (interval) => minutes >= interval.startMinute && minutes < interval.endMinute,
   );
