@@ -20,6 +20,23 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
+## Configuration
+
+All optional: the app runs without any of them.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `ROUTING_URL` | `https://routing.openstreetmap.de/routed-car` | OSRM server for trip-mode road routes. `off` disables routing, and trip mode falls back to straight-line distances. |
+| `OVERPASS_ENDPOINTS` | the public Overpass instances | Comma-separated Overpass API URLs for the food, green-space and parking lookups. |
+
+The default router is the free instance FOSSGIS runs for the OpenStreetMap
+community. Its [terms](https://www.fossgis.de/arbeitsgruppen/osm-server/nutzungsbedingungen/)
+allow at most one request a second, ask for a User-Agent that names the app
+(it is sent), and rule out high-traffic or commercial-core use — for that,
+self-host OSRM and point `ROUTING_URL` at it. The app spaces its calls a
+second apart and caches routes for 24 hours, but the spacing holds per server
+instance: several instances each keep their own.
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:

@@ -40,6 +40,15 @@ export interface LatLon {
   lon: number;
 }
 
+/** A driving route between two places, as the road router measured it. */
+export interface RoadRoute {
+  /** Along the road, as the router measures it — not the length of `line`. */
+  distanceKm: number;
+  durationMin: number;
+  /** The road itself, thinned to a point every ~150 m. */
+  line: LatLon[];
+}
+
 /**
  * What OpenStreetMap records about parking at the charger. Sparse by nature:
  * the federal feed carries nothing on parking, and only mappers who bothered

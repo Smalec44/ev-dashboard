@@ -45,7 +45,7 @@ export const TRIP_CRITERIA: { id: Criterion; label: string; hint: string }[] = [
   {
     id: "detour",
     label: "Short detour",
-    hint: "Less extra distance off the direct line ranks first",
+    hint: "Less extra driving to reach the station ranks first",
   },
 ];
 

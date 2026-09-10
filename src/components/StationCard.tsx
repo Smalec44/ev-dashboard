@@ -155,6 +155,8 @@ export function StationCard({
   rank,
   threshold,
   detourKm,
+  offRouteKm,
+  detourBasis,
   routeProgress,
   distanceKm,
   searchedCity,
@@ -167,6 +169,13 @@ export function StationCard({
   rank: number;
   threshold: number;
   detourKm?: number | undefined;
+  /** Km from the road, when the trip was measured on one. */
+  offRouteKm?: number | null | undefined;
+  /**
+   * Where the detour came from, on a road: the router's own figure, or the
+   * estimate of twice the distance off the route. Absent on the straight line.
+   */
+  detourBasis?: "road" | "est" | undefined;
   routeProgress?: number | undefined;
   /** Km from the searched town centre, in region mode. */
   distanceKm?: number | undefined;
@@ -232,7 +241,28 @@ export function StationCard({
             <p className="mt-1.5 flex flex-wrap gap-1.5">
               <span className="rounded-md bg-surface-muted px-2 py-0.5 text-xs font-medium tabular-nums">
                 +{detourKm.toFixed(1)} km detour
+                {detourBasis === "road" && (
+                  <span
+                    className="font-normal text-muted"
+                    title="Measured on the road network: to the station and on to the destination, less the direct drive"
+                  >
+                    {" "}by road
+                  </span>
+                )}
+                {detourBasis === "est" && (
+                  <span
+                    className="font-normal text-muted"
+                    title="Estimated as twice the distance off the route"
+                  >
+                    {" "}est.
+                  </span>
+                )}
               </span>
+              {typeof offRouteKm === "number" && (
+                <span className="rounded-md bg-surface-muted px-2 py-0.5 text-xs text-muted tabular-nums">
+                  {offRouteKm.toFixed(1)} km off route
+                </span>
+              )}
               {routeProgress !== undefined && (
                 <span className="rounded-md bg-surface-muted px-2 py-0.5 text-xs text-muted tabular-nums">
                   {Math.round(routeProgress * 100)}% of the way

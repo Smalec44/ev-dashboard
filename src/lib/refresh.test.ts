@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { applyRefresh, inScope, scopeFromParams, scopeToParams, type RefreshScope } from "./refresh.ts";
+import { distanceKm } from "./geo.ts";
+import {
+  applyRefresh,
+  inScope,
+  scopeFromParams,
+  scopeToParams,
+  type RefreshResponse,
+  type RefreshScope,
+} from "./refresh.ts";
+import { indexRoute } from "./route.ts";
 import type { ChargingStation } from "./types.ts";
 
 /** Element at `index`, failing the test loudly rather than typing as undefined. */
@@ -83,6 +92,7 @@ test("scope parameters round-trip and reject nonsense", () => {
     maxDetourKm: 25,
     stopAt: 0.4,
     windowKm: 30,
+    basis: "straight",
   };
   assert.deepEqual(scopeFromParams(scopeToParams(trip)), trip);
   assert.equal(scopeFromParams(new URLSearchParams("mode=region&lat=47&lon=8")), null);
@@ -112,6 +122,7 @@ test("a trip refresh covers only the break window along the corridor", () => {
     maxDetourKm: 15,
     stopAt: 0.45,
     windowKm: 25,
+    basis: "straight",
   };
   // Bern: on the corridor and within a couple of km of the break.
   assert.equal(inScope(trip, { lat: 46.95, lon: 7.45 }), true);
@@ -119,4 +130,83 @@ test("a trip refresh covers only the break window along the corridor", () => {
   assert.equal(inScope(trip, { lat: 47.38, lon: 8.54 }), false);
   // Biel: level with the break along the route, but 16 km off the line — the detour cap still applies.
   assert.equal(inScope(trip, { lat: 47.14, lon: 7.25 }), false);
+});
+
+/**
+ * An L-shaped road: 0.5° north, then 0.66° east. The chord between its ends
+ * cuts the corner, so the chord's middle is far from the road and the corner
+ * is far from the chord.
+ */
+const L_START = { lat: 46.5, lon: 7 };
+const L_CORNER = { lat: 47, lon: 7 };
+const L_END = { lat: 47, lon: 7.66 };
+const L_ROAD = indexRoute({
+  distanceKm: distanceKm(L_START, L_CORNER) + distanceKm(L_CORNER, L_END),
+  line: [L_START, L_CORNER, L_END],
+});
+const lTrip = (basis: "road" | "straight"): RefreshScope => ({
+  mode: "trip",
+  from: L_START,
+  to: L_END,
+  maxDetourKm: 25,
+  stopAt: 0.5,
+  windowKm: 20,
+  basis,
+});
+/** The middle of the chord: some 25 km from the road. */
+const ON_CHORD = { lat: 46.75, lon: 7.33 };
+/** Just inside the corner: on the road, but nearly 30 km of detour off the chord. */
+const AT_CORNER = { lat: 46.99, lon: 7.01 };
+
+/** The basis a trip query parses to, or null for anything else. */
+function basisOf(params: URLSearchParams) {
+  const scope = scopeFromParams(params);
+  return scope?.mode === "trip" ? scope.basis : null;
+}
+
+test("a trip scope carries its basis, and a request without one means the straight line", () => {
+  assert.deepEqual(scopeFromParams(scopeToParams(lTrip("road"))), lTrip("road"));
+  const fromOldClient = scopeToParams(lTrip("road"));
+  fromOldClient.delete("basis");
+  assert.equal(basisOf(fromOldClient), "straight");
+  const odd = scopeToParams(lTrip("road"));
+  odd.set("basis", "sideways");
+  assert.equal(basisOf(odd), "straight");
+});
+
+test("with the road, a trip's scope is the road corridor, not the chord's", () => {
+  assert.equal(inScope(lTrip("road"), ON_CHORD, L_ROAD), false);
+  assert.equal(inScope(lTrip("road"), AT_CORNER, L_ROAD), true);
+  // The straight line has it the other way round.
+  assert.equal(inScope(lTrip("straight"), ON_CHORD), true);
+  assert.equal(inScope(lTrip("straight"), AT_CORNER), false);
+});
+
+/** Off the road but on the chord; on the road near the corner, refreshed; on the road, gone from the feed. */
+const offRoad = station("off-road", ON_CHORD.lat, ON_CHORD.lon);
+const onRoad = station("on-road", AT_CORNER.lat, AT_CORNER.lon, { stalls: 2 });
+const vanished = station("vanished", 46.98, 7);
+const refreshed = station("on-road", AT_CORNER.lat, AT_CORNER.lon, { stalls: 6 });
+
+test("a road refresh replaces the road corridor and keeps what lies off it", () => {
+  const response: RefreshResponse = { ...ok, refreshedAt: "t", stations: [refreshed], routeBasis: "road" };
+  const next = applyRefresh([offRoad, onRoad, vanished], response, lTrip("road"), L_ROAD);
+  assert.deepEqual(next.map((s) => s.id).sort(), ["off-road", "on-road"]);
+  assert.equal(next.find((s) => s.id === "on-road")?.stalls, 6);
+});
+
+test("unless the server followed the road too, the client's road is ignored", () => {
+  const current = [offRoad, onRoad, vanished];
+  for (const routeBasis of [undefined, "straight"] as const) {
+    const response: RefreshResponse = {
+      ...ok,
+      refreshedAt: "t",
+      stations: [refreshed],
+      ...(routeBasis && { routeBasis }),
+    };
+    const next = applyRefresh(current, response, lTrip("road"), L_ROAD);
+    assert.deepEqual(next, applyRefresh(current, response, lTrip("road")), `routeBasis ${routeBasis}`);
+    // The straight corridor was rebuilt: the chord's station went with it, the corner's stayed.
+    assert.deepEqual(next.map((s) => s.id).sort(), ["on-road", "vanished"], `routeBasis ${routeBasis}`);
+  }
 });

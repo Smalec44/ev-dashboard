@@ -22,6 +22,15 @@ export const ATTRIBUTIONS = {
     licence: "ODbL",
     commercialUseRestricted: false,
   },
+  osrm: {
+    source: "osrm",
+    // FOSSGIS's terms ask routing users to link to the page for reporting map
+    // errors; the route data itself is OpenStreetMap's, hence ODbL.
+    text: "Road routes: OSRM on FOSSGIS servers, © OpenStreetMap contributors — report a map error",
+    url: "https://www.openstreetmap.org/fixthemap",
+    licence: "ODbL",
+    commercialUseRestricted: true,
+  },
   fso: {
     source: "fso",
     text: "Vehicle registrations: Federal Statistical Office (FSO), new registrations of road vehicles",
@@ -75,7 +84,8 @@ export const ATTRIBUTIONS = {
 
 /**
  * The sources every render depends on: the federal feed for stations,
- * OpenStreetMap for the food and greenery around them, GeoNames for the town
+ * OpenStreetMap for the food and greenery around them, the FOSSGIS router
+ * for trip-mode road routes, GeoNames for the town
  * centres the search resolves against, and the FSO figures and three news
  * feeds behind the market panel. Credit the ones actually in use — naming a
  * source the page does not draw on is its own kind of wrong, and ElCom and
@@ -84,6 +94,7 @@ export const ATTRIBUTIONS = {
 const ALWAYS_ACTIVE: Attribution[] = [
   ATTRIBUTIONS.bfe,
   ATTRIBUTIONS.osm,
+  ATTRIBUTIONS.osrm,
   ATTRIBUTIONS.geonames,
   ATTRIBUTIONS.fso,
   ATTRIBUTIONS.electriveNet,

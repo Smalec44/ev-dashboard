@@ -1,4 +1,6 @@
-import { detourKm, distanceKm, routeProgress } from "./geo";
+import { detourKm, distanceKm, inSwitzerland, routeProgress } from "./geo";
+import type { RouteIndex } from "./route";
+import { isStop, measureOnRoad } from "./trip";
 import type { ChargingStation, LatLon } from "./types";
 
 /**
@@ -18,6 +20,11 @@ export type RefreshScope =
       stopAt: number;
       /** Half-width of that window along the route, in km. */
       windowKm: number;
+      /**
+       * What the client measured its stops on. The server follows the road
+       * only when asked, so both sides rebuild and merge the same corridor.
+       */
+      basis: "road" | "straight";
     };
 
 export interface RefreshResponse {
@@ -29,6 +36,12 @@ export interface RefreshResponse {
   parkingAvailable: boolean;
   /** "facet: reason" per pass that failed; the facet is kept from before. */
   errors: string[];
+  /**
+   * What a trip refresh was actually measured on: "road" only when the server
+   * had the route too. Absent from region refreshes and from servers older
+   * than roads, and absent means straight.
+   */
+  routeBasis?: "road" | "straight";
 }
 
 /**
@@ -36,11 +49,20 @@ export interface RefreshResponse {
  * for a trip — the detour corridor, cut down to the stretch around the break.
  * A whole Geneva → St. Gallen corridor is hundreds of stations nobody will
  * stop at; the window around the chosen stop is what the driver is looking at.
+ *
+ * Given the road's index, a trip's corridor is measured along the road with
+ * the very rules the list uses (see trip.ts); without one, along the straight
+ * line between the two towns.
  */
-export function inScope(scope: RefreshScope, station: LatLon & { city?: string }): boolean {
+export function inScope(
+  scope: RefreshScope,
+  station: LatLon & { city?: string },
+  index?: RouteIndex,
+): boolean {
   if (scope.mode === "region") {
     return distanceKm(scope, station) <= scope.radiusKm || station.city === scope.city;
   }
+  if (index) return isStop(measureOnRoad(index, station), index.totalKm, scope);
   if (detourKm(scope.from, scope.to, station) > scope.maxDetourKm) return false;
   const alongKm =
     Math.abs(routeProgress(scope.from, scope.to, station) - scope.stopAt) *
@@ -67,14 +89,12 @@ export function scopeToParams(scope: RefreshScope): URLSearchParams {
     maxDetourKm: String(scope.maxDetourKm),
     stopAt: String(scope.stopAt),
     windowKm: String(scope.windowKm),
+    basis: scope.basis,
   });
 }
 
 /** Wider than the UI's sliders, so a future slider change cannot silently 400. */
 const MAX_KM = 60;
-
-const inSwitzerland = (p: LatLon) =>
-  p.lat >= 45 && p.lat <= 48.5 && p.lon >= 5 && p.lon <= 11;
 
 /** The inverse of scopeToParams, refusing anything malformed or off the map. */
 export function scopeFromParams(params: URLSearchParams): RefreshScope | null {
@@ -110,7 +130,9 @@ export function scopeFromParams(params: URLSearchParams): RefreshScope | null {
     const from = { lat: fromLat, lon: fromLon };
     const to = { lat: toLat, lon: toLon };
     if (!inSwitzerland(from) || !inSwitzerland(to)) return null;
-    return { mode: "trip", from, to, maxDetourKm, stopAt, windowKm };
+    // A client from before roads sends none, and meant the straight line.
+    const basis = params.get("basis") === "road" ? "road" : "straight";
+    return { mode: "trip", from, to, maxDetourKm, stopAt, windowKm, basis };
   }
   return null;
 }
@@ -123,16 +145,23 @@ export function scopeFromParams(params: URLSearchParams): RefreshScope | null {
  * server's. The OpenStreetMap facets are the exception: when a pass failed,
  * the previous build's food, green or parking for that station is kept rather
  * than replaced with nothing, since "Overpass was busy" is not "no cafés".
+ *
+ * `index` is the road the client measured its list on when the refresh was
+ * asked for. It only counts if the server rebuilt along the road too; when
+ * the server fell back to the straight line, so does the merge, or stations
+ * the server never looked at would be dropped as gone.
  */
 export function applyRefresh(
   current: ChargingStation[],
   response: RefreshResponse,
   scope: RefreshScope,
+  index?: RouteIndex,
 ): ChargingStation[] {
+  const road = response.routeBasis === "road" ? index : undefined;
   const previous = new Map(current.map((station) => [station.id, station]));
   const freshIds = new Set(response.stations.map((station) => station.id));
   const kept = current.filter(
-    (station) => !freshIds.has(station.id) && !inScope(scope, station),
+    (station) => !freshIds.has(station.id) && !inScope(scope, station, road),
   );
   const fresh = response.stations.map((station) => {
     const old = previous.get(station.id);

@@ -9,8 +9,9 @@ import {
   stationsNearRegion,
   type StationFeed,
 } from "@/data/stations";
-import { detourKm as computeDetour, distanceKm, routeProgress } from "@/lib/geo";
 import { routeViaStationUrl, stationMapUrl } from "@/lib/maps";
+import { indexRoute, routeQuery, type RouteIndex } from "@/lib/route";
+import { measureStations, mergeDetours, selectStops, type TripBasis } from "@/lib/trip";
 import type { ChargingStation } from "@/lib/types";
 import {
   DEFAULT_CRITERIA,
@@ -32,6 +33,8 @@ import { RankingControls, type ConnectorFilter } from "./RankingControls";
 import { RegionCombobox } from "./RegionCombobox";
 import { ResultsMap, type MapArea, type MapRoute } from "./ResultsMap";
 import { StationCard, cardElementId } from "./StationCard";
+import { useRoadDetours, type DetourStop } from "./useRoadDetours";
+import { useRoadRoute } from "./useRoadRoute";
 import {
   applyRefresh,
   scopeToParams,
@@ -68,6 +71,15 @@ const ENDPOINT_MARGIN = 0.1;
  */
 const STOP_WINDOW_KM = 20;
 
+/**
+ * Stops that get their true road detour. The router's distance table tops
+ * out at 100 × 100 places: the trip's two ends plus 98 stops.
+ */
+const EXACT_DETOUR_STOPS = 98;
+
+/** One empty shortlist, so the detour hook sees the same one every render. */
+const NO_STOPS: DetourStop[] = [];
+
 /** The break slider stays inside the margins: a stop at 0% is not a stop. */
 const STOP_AT_MIN = ENDPOINT_MARGIN;
 const STOP_AT_MAX = 1 - ENDPOINT_MARGIN;
@@ -85,6 +97,14 @@ function liveGaps(errors: string[]): string {
   return facets.length > 1
     ? `${facets.slice(0, -1).join(", ")} and ${facets.at(-1) ?? ""}`
     : (facets[0] ?? "");
+}
+
+/** "2 h 39 min", or "25 min" under the hour. */
+function formatDuration(minutes: number): string {
+  const total = Math.round(minutes);
+  const hours = Math.floor(total / 60);
+  const rest = total % 60;
+  return hours === 0 ? `${rest} min` : `${hours} h ${String(rest).padStart(2, "0")} min`;
 }
 
 /** Only ever rendered after the fetch resolves, so it never runs on the server. */
@@ -215,6 +235,11 @@ export function Dashboard() {
   const to = matchedTo ?? lastTo;
   const endpointsResolved = matchedFrom !== null && matchedTo !== null;
   const sameEndpoints = from !== null && to !== null && from.slug === to.slug;
+  // Called on every render, with no ends outside trip mode, so the hook order
+  // never changes; it answers "idle" then and fetches nothing.
+  const tripEnds = mode === "trip" && !sameEndpoints;
+  const roadRoute = useRoadRoute(tripEnds ? from : null, tripEnds ? to : null);
+  const road = roadRoute.state === "ready" ? roadRoute.route : null;
 
   const byConnector = useMemo(
     () =>
@@ -224,48 +249,56 @@ export function Dashboard() {
     [connector, stations],
   );
 
-  const trip = useMemo(() => {
-    if (mode !== "trip" || !from || !to || sameEndpoints) return null;
-    const directKm = distanceKm(from, to);
-    const detours = new Map<string, number>();
-    const progress = new Map<string, number>();
-    const candidates = [];
+  const roadIndex = useMemo(() => (road ? indexRoute(road) : null), [road]);
 
-    for (const station of byConnector) {
-      // Detour is the only hard gate. Being near the halfway point is scored
-      // instead of filtered, because a hard band returns nothing on routes
-      // whose middle stretch simply has no charging sites.
-      const extra = computeDetour(from, to, station);
-      if (extra > maxDetour) continue;
-      detours.set(station.id, extra);
-      progress.set(station.id, routeProgress(from, to, station));
-      candidates.push(station);
-    }
+  // The expensive half of a trip search — one projection onto the road per
+  // station — so it runs when the road or the stations change, never on a
+  // slider move. Until the road arrives, and if it never does, the straight
+  // line between the two towns stands in.
+  const measured = useMemo(() => {
+    if (!tripEnds || !from || !to) return null;
+    const basis: TripBasis = roadIndex
+      ? { kind: "road", index: roadIndex }
+      : { kind: "straight", from, to };
+    return { from, to, stations: byConnector, basis, ...measureStations(byConnector, basis) };
+  }, [tripEnds, from, to, roadIndex, byConnector]);
 
-    // Only stations near the chosen break are stops at all; the rest of the
-    // corridor is scenery. The window is in km, so a short trip gets the
-    // same tolerance as a long one — and once the trip is no longer than
-    // two windows, the window covers the whole route wherever the break
-    // sits, so every corridor candidate is a stop and the slider is moot.
-    const shortTrip = directKm <= 2 * STOP_WINDOW_KM;
-    const window = STOP_WINDOW_KM / directKm;
-    const nearBreak = shortTrip
-      ? candidates
-      : candidates.filter(
-          (s) => Math.abs((progress.get(s.id) ?? 0.5) - stopAt) <= window,
-        );
-
+  // The stops as the estimates have them, before any true road detour applies.
+  const selection = useMemo(() => {
+    if (!measured) return null;
     return {
-      from,
-      to,
-      directKm,
-      shortTrip,
-      detours,
-      progress,
-      candidates: nearBreak,
-      corridorCount: candidates.length,
+      from: measured.from,
+      to: measured.to,
+      basis: measured.basis.kind,
+      ...selectStops(measured.stations, measured, {
+        maxDetourKm: maxDetour,
+        stopAt,
+        windowKm: STOP_WINDOW_KM,
+      }),
     };
-  }, [mode, sameEndpoints, from, to, byConnector, maxDetour, stopAt]);
+  }, [measured, maxDetour, stopAt]);
+
+  // The stops most worth measuring exactly: the smallest estimated detours.
+  const shortlist = useMemo(() => {
+    if (selection?.basis !== "road") return NO_STOPS;
+    const estimate = (id: string) => selection.detours.get(id) ?? Infinity;
+    return [...selection.candidates]
+      .sort((a, b) => estimate(a.id) - estimate(b.id))
+      .slice(0, EXACT_DETOUR_STOPS)
+      .map(({ id, lat, lon }) => ({ id, lat, lon }));
+  }, [selection]);
+  // Called on every render, like useRoadRoute; off the road it asks nothing.
+  const exactDetours = useRoadDetours(
+    selection?.basis === "road" ? routeQuery(selection.from, selection.to).toString() : null,
+    shortlist,
+  );
+
+  const trip = useMemo(() => {
+    if (!selection) return null;
+    // The straight line has no road to measure on: its detours stay as they are.
+    if (selection.basis !== "road") return { ...selection, detourBasis: null };
+    return { ...selection, ...mergeDetours(selection, exactDetours, maxDetour) };
+  }, [selection, exactDetours, maxDetour]);
 
   const nearby = useMemo(() => {
     if (mode !== "region" || !region) return null;
@@ -278,15 +311,21 @@ export function Dashboard() {
 
   // The live refresh covers exactly what is being searched, so the button is
   // only offered once the search resolves to somewhere.
-  const scope = useMemo<{ scope: RefreshScope; label: string } | null>(() => {
+  const scope = useMemo<{
+    scope: RefreshScope;
+    label: string;
+    /** The road the list was measured on, if any: the refresh merges along it. */
+    index: RouteIndex | null;
+  } | null>(() => {
     if (mode === "region") {
       if (!region) return null;
       return {
         scope: { mode: "region", city: region.city, lat: region.lat, lon: region.lon, radiusKm: radius },
         label: region.city,
+        index: null,
       };
     }
-    if (!trip) return null;
+    if (!trip || !measured) return null;
     return {
       scope: {
         mode: "trip",
@@ -295,25 +334,31 @@ export function Dashboard() {
         maxDetourKm: maxDetour,
         stopAt,
         // A short trip lists the whole corridor, so the refresh must cover it too.
-        windowKm: trip.shortTrip ? Math.max(STOP_WINDOW_KM, trip.directKm) : STOP_WINDOW_KM,
+        windowKm: trip.shortTrip ? Math.max(STOP_WINDOW_KM, trip.routeKm) : STOP_WINDOW_KM,
+        // The server follows the road only when told to, so both sides agree.
+        basis: trip.basis,
       },
       label: `${trip.from.city} → ${trip.to.city}`,
+      index: measured.basis.kind === "road" ? measured.basis.index : null,
     };
-  }, [mode, region, radius, trip, maxDetour, stopAt]);
+  }, [mode, region, radius, trip, measured, maxDetour, stopAt]);
 
   async function refresh() {
     if (!scope || live.state === "busy") return;
-    const { label } = scope;
+    // Taken together at the click, before any await: the corridor asked for
+    // and the road it was measured on, even if a new road lands meanwhile.
+    const { label, scope: requested, index } = scope;
     setLive({ state: "busy", label });
     try {
-      const res = await fetch(`/api/refresh?${scopeToParams(scope.scope)}`, {
+      const res = await fetch(`/api/refresh?${scopeToParams(requested)}`, {
         cache: "no-store",
       });
       const body = (await res.json()) as RefreshResponse | { error: string };
       if (!res.ok || "error" in body) {
         throw new Error("error" in body ? body.error : `refresh returned ${res.status}`);
       }
-      setFeedStations((current) => applyRefresh(current, body, scope.scope));
+      // applyRefresh uses the road only if the server rebuilt along it too.
+      setFeedStations((current) => applyRefresh(current, body, requested, index ?? undefined));
       setLive({
         state: "done",
         label,
@@ -398,8 +443,11 @@ export function Dashboard() {
   const selectFromMap = useCallback((id: string) => select(id, true), [select]);
 
   const mapRoute = useMemo<MapRoute | undefined>(
-    () => (trip ? { from: trip.from, to: trip.to, stopAt } : undefined),
-    [trip, stopAt],
+    () =>
+      trip
+        ? { from: trip.from, to: trip.to, stopAt, ...(road && { road: road.line }) }
+        : undefined,
+    [trip, stopAt, road],
   );
   const mapArea = useMemo<MapArea | undefined>(
     () =>
@@ -539,7 +587,7 @@ export function Dashboard() {
               </label>
               <span className="text-sm font-medium tabular-nums">
                 {trip
-                  ? `≈ ${Math.round(stopAt * trip.directKm)} km after ${trip.from.city}`
+                  ? `≈ ${Math.round(stopAt * trip.routeKm)} km after ${trip.from.city}`
                   : `${Math.round(stopAt * 100)}% of the way`}
               </span>
             </div>
@@ -591,8 +639,9 @@ export function Dashboard() {
               className="mt-2 w-full accent-accent"
             />
             <p className="mt-1 text-xs text-muted">
-              How far off the direct line a station may sit. Measured as the
-              crow flies, so the road adds some on top.
+              {trip?.basis === "road"
+                ? "Extra driving to reach the station and get back on the route, estimated as twice its distance off the road."
+                : "How far off the direct line a station may sit. Measured as the crow flies, so the road adds some on top."}
             </p>
           </div>
         )}
@@ -696,11 +745,16 @@ export function Dashboard() {
               </h2>
               <p className="text-sm text-muted">
                 {mode === "trip" && trip
-                  ? `${Math.round(trip.directKm)} km direct · ${ranked.length} stop${ranked.length === 1 ? "" : "s"} ${trip.shortTrip ? "along the way" : `within ${STOP_WINDOW_KM} km of the break`}, ${maxDetour} km off the line`
+                  ? `${road ? `${Math.round(road.distanceKm)} km by road · ${formatDuration(road.durationMin)}` : `${Math.round(trip.routeKm)} km direct`} · ${ranked.length} stop${ranked.length === 1 ? "" : "s"} ${trip.shortTrip ? "along the way" : `within ${STOP_WINDOW_KM} km of the break`}, ${trip.basis === "road" ? `≤ ${maxDetour} km detour` : `${maxDetour} km off the line`}`
                   : `${ranked.length} charging ${ranked.length === 1 ? "spot" : "spots"} within ${radius} km`}
                 {flaggedCount > 0 &&
                   ` · ${flaggedCount} flagged for thin food nearby`}
               </p>
+              {mode === "trip" && roadRoute.state === "failed" && (
+                <p className="mt-0.5 text-xs text-warn" title={roadRoute.message}>
+                  Road route unavailable — using straight-line distances.
+                </p>
+              )}
             </div>
             <div
               className="flex gap-4 text-sm"
@@ -767,7 +821,7 @@ export function Dashboard() {
             <div className="rounded-xl border border-border bg-surface p-5 text-sm text-muted">
               {mode === "trip"
                 ? trip?.shortTrip
-                  ? `No charging spots along the way within ${maxDetour} km of the line. Widen the detour, or switch the connector filter to All.`
+                  ? `No charging spots along the way within ${trip.basis === "road" ? `a ${maxDetour} km detour` : `${maxDetour} km of the line`}. Widen the detour, or switch the connector filter to All.`
                   : `No charging spots within ${STOP_WINDOW_KM} km of the break point${trip && trip.corridorCount > 0 ? ` (${trip.corridorCount} elsewhere along the way)` : ""}. Move the break, widen the detour, or switch the connector filter to All.`
                 : `No ${connector === "ALL" ? "" : `${connector} `}charging spots within ${radius} km of ${region?.city}. Widen the radius, or switch the connector filter to All.`}
             </div>
@@ -783,6 +837,8 @@ export function Dashboard() {
                   rank={pageStart + index + 1}
                   threshold={threshold}
                   detourKm={trip?.detours.get(item.station.id)}
+                  offRouteKm={trip?.offRoute.get(item.station.id)}
+                  detourBasis={trip?.detourBasis?.get(item.station.id)}
                   routeProgress={trip?.progress.get(item.station.id)}
                   distanceKm={nearby?.distances.get(item.station.id)}
                   searchedCity={region?.city}
@@ -827,8 +883,9 @@ export function Dashboard() {
 
           {mode === "trip" && ranked.length > 0 && (
             <p className="text-xs text-muted">
-              Detours are straight-line distances, so real road numbers will be
-              higher — use them to compare candidates, not to plan fuel stops.
+              {trip?.basis === "road"
+                ? "Road route © OpenStreetMap contributors, via OSRM (FOSSGIS). Detours marked by road are measured on the road network; est. are twice the distance off the route."
+                : "Detours are straight-line distances, so real road numbers will be higher — use them to compare candidates, not to plan fuel stops."}
             </p>
           )}
         </>

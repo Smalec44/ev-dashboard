@@ -1,4 +1,5 @@
 import type { NewsItem, NewsRegion } from "../../lib/types.ts";
+import { USER_AGENT } from "../http.ts";
 
 /**
  * The latest EV headlines, one RSS feed per region. Headlines and links only;
@@ -29,7 +30,6 @@ const FEEDS: Record<NewsRegion, { env: string; url: string }> = {
   world: { env: "EV_NEWS_FEED_WORLD", url: "https://insideevs.com/rss/articles/all/" },
 };
 export const NEWS_COUNT = 5;
-const USER_AGENT = "ev-dashboard/0.1 (+https://github.com/Smalec44/ev-dashboard)";
 
 const ENTITIES: Record<string, string> = {
   amp: "&",

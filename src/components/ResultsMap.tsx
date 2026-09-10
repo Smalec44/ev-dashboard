@@ -3,8 +3,9 @@
 import "leaflet/dist/leaflet.css";
 import type * as LeafletModule from "leaflet";
 import type { LayerGroup, Map as LeafletMap } from "leaflet";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { RankedStation } from "@/lib/ranking";
+import { indexRoute, pointAlong } from "@/lib/route";
 import type { LatLon } from "@/lib/types";
 
 type Leaflet = typeof LeafletModule;
@@ -18,8 +19,14 @@ interface Engine {
 export interface MapRoute {
   from: LatLon & { city: string };
   to: LatLon & { city: string };
-  /** 0–1 along the direct line: where the driver wants the break. */
+  /**
+   * 0–1 of the way: where the driver wants the break. Along the road when
+   * there is one, else along the direct line — whichever the stops were
+   * measured on.
+   */
   stopAt: number;
+  /** The road between the two, when the router answered. */
+  road?: LatLon[];
 }
 
 export interface MapArea {
@@ -31,8 +38,9 @@ export interface MapArea {
 const HIGHLIGHTED_STOPS = 3;
 
 /**
- * The results on a map: the direct line with its ends and the planned break,
- * or the searched town with its radius, plus one dot per ranked stop.
+ * The results on a map: the road (or, without one, the direct line) with its
+ * ends and the planned break, or the searched town with its radius, plus one
+ * dot per ranked stop.
  *
  * Leaflet reads `window` on import, so it is loaded inside an effect rather
  * than at module level, and the page renders the same on the server with an
@@ -56,6 +64,9 @@ export function ResultsMap({
   // State rather than refs: the drawing effects key on the instance, so a
   // remount (which creates a new map) redraws and refits on its own.
   const [engine, setEngine] = useState<Engine | null>(null);
+  // Kept across slider moves: only the break marker moves along the road.
+  const roadLine = route?.road;
+  const roadIndex = useMemo(() => (roadLine ? indexRoute({ line: roadLine }) : null), [roadLine]);
 
   useEffect(() => {
     let cancelled = false;
@@ -91,13 +102,15 @@ export function ResultsMap({
     // The box may have been resized since the map measured it.
     instance.invalidateSize();
     if (route) {
-      instance.fitBounds(
-        L.latLngBounds(
-          [route.from.lat, route.from.lon],
-          [route.to.lat, route.to.lon],
-        ),
-        { padding: [32, 32] },
-      );
+      // The road can bulge well outside the box of its two ends (Zürich →
+      // Lugano swings west to the Gotthard), so it sets the frame when known.
+      const corners: [number, number][] = route.road
+        ? route.road.map((p) => [p.lat, p.lon])
+        : [
+            [route.from.lat, route.from.lon],
+            [route.to.lat, route.to.lon],
+          ];
+      instance.fitBounds(L.latLngBounds(corners), { padding: [32, 32] });
     } else if (area) {
       instance.fitBounds(
         L.latLng(area.centre.lat, area.centre.lon).toBounds(area.radiusKm * 2000),
@@ -129,16 +142,37 @@ export function ResultsMap({
     if (route) {
       const a: [number, number] = [route.from.lat, route.from.lon];
       const b: [number, number] = [route.to.lat, route.to.lon];
-      // Straight, like every distance in the app — this is the line the
-      // detours are measured from, not a suggestion of the road.
-      L.polyline([a, b], { color: foreground, weight: 3, dashArray: "8 8", opacity: 0.8 }).addTo(layer);
-      L.circleMarker(
-        [
+      let breakPoint: [number, number];
+      if (roadIndex) {
+        // The stops and the break are measured along the road, so a dashed
+        // straight line would only suggest a shortcut that does not exist.
+        L.polyline(
+          roadIndex.line.map((p): [number, number] => [p.lat, p.lon]),
+          { color: foreground, weight: 4, opacity: 0.85, className: "road-route" },
+        ).addTo(layer);
+        const at = pointAlong(roadIndex, route.stopAt);
+        breakPoint = [at.lat, at.lon];
+      } else {
+        // No road: the detours and the break are measured from this line.
+        L.polyline([a, b], {
+          color: foreground,
+          weight: 3,
+          dashArray: "8 8",
+          opacity: 0.8,
+          className: "direct-line",
+        }).addTo(layer);
+        breakPoint = [
           a[0] + (b[0] - a[0]) * route.stopAt,
           a[1] + (b[1] - a[1]) * route.stopAt,
-        ],
-        { radius: 9, color: accent, weight: 2, dashArray: "3 3", fillOpacity: 0 },
-      )
+        ];
+      }
+      L.circleMarker(breakPoint, {
+        radius: 9,
+        color: accent,
+        weight: 2,
+        dashArray: "3 3",
+        fillOpacity: 0,
+      })
         .bindTooltip("Planned break", { direction: "bottom", offset: [0, 8] })
         .addTo(layer);
       endpoint(route.from);
@@ -181,7 +215,7 @@ export function ResultsMap({
         .on("click", () => onSelect(stop.station.id))
         .addTo(layer);
     });
-  }, [engine, route, area, stops, selectedId, onSelect]);
+  }, [engine, route, roadIndex, area, stops, selectedId, onSelect]);
 
   return (
     <div
@@ -192,7 +226,7 @@ export function ResultsMap({
       role="img"
       aria-label={
         route
-          ? `Map of the route from ${route.from.city} to ${route.to.city} with the ranked charging stops`
+          ? `Map of the ${route.road ? "road " : ""}route from ${route.from.city} to ${route.to.city} with the ranked charging stops`
           : area
             ? `Map of charging stations around ${area.centre.city}`
             : "Map of charging stations"

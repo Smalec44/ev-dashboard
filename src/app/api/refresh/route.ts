@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
-import { scopeFromParams, inScope, type RefreshResponse } from "@/lib/refresh";
+import { scopeFromParams, inScope, type RefreshResponse, type RefreshScope } from "@/lib/refresh";
+import { indexRoute, type RouteIndex } from "@/lib/route";
 import { enrich } from "@/server/pipeline/enrich";
 import {
   EVSE_URL,
@@ -11,6 +12,7 @@ import {
   publishSite,
 } from "@/server/pipeline/feed";
 import { cellBboxes } from "@/server/pipeline/geo";
+import { getRouter } from "@/server/routing/osrm";
 
 /**
  * Rebuilds the stations inside one search area from the live sources: the
@@ -52,6 +54,16 @@ async function loadFeed(): Promise<Uint8Array> {
   return buffer;
 }
 
+/**
+ * The road a trip refresh follows: only when the client measured its list on
+ * one, and then almost always from the router's cache, since the page asked
+ * for the same route moments before.
+ */
+async function roadFor(scope: RefreshScope): Promise<RouteIndex | null> {
+  if (scope.mode !== "trip" || scope.basis !== "road") return null;
+  return indexRoute(await getRouter().route(scope.from, scope.to));
+}
+
 const message = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
 
@@ -64,9 +76,10 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const [feedResult, statusResult] = await Promise.allSettled([
+  const [feedResult, statusResult, roadResult] = await Promise.allSettled([
     loadFeed(),
     download(STATUS_URL),
+    roadFor(scope),
   ]);
   if (feedResult.status === "rejected") {
     return Response.json(
@@ -77,8 +90,13 @@ export async function GET(request: NextRequest) {
 
   const refreshedAt = new Date().toISOString();
   const errors: string[] = [];
+  // Without the road the refresh falls back to the straight corridor and says
+  // so in `routeBasis`, and the client then merges on the straight line too.
+  let road: RouteIndex | undefined;
+  if (roadResult.status === "fulfilled") road = roadResult.value ?? undefined;
+  else errors.push(`route: ${message(roadResult.reason)}`);
   const sites = buildSites(parseFeed(feedResult.value)).filter((site) =>
-    inScope(scope, site),
+    inScope(scope, site, road),
   );
   if (statusResult.status === "fulfilled") {
     attachLiveStatus(sites, parseStatus(statusResult.value), refreshedAt);
@@ -115,5 +133,6 @@ export async function GET(request: NextRequest) {
     parkingAvailable: result.parkingAvailable,
     errors: [...errors, ...result.errors],
   };
+  if (scope.mode === "trip") body.routeBasis = road ? "road" : "straight";
   return Response.json(body, { headers: { "Cache-Control": "no-store" } });
 }

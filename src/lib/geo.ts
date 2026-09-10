@@ -2,6 +2,10 @@ import type { LatLon } from "./types";
 
 const EARTH_RADIUS_KM = 6371;
 
+/** A generous box around the country: enough to refuse coordinates from elsewhere. */
+export const inSwitzerland = (p: LatLon) =>
+  p.lat >= 45 && p.lat <= 48.5 && p.lon >= 5 && p.lon <= 11;
+
 const toRad = (deg: number) => (deg * Math.PI) / 180;
 
 export function distanceKm(a: LatLon, b: LatLon): number {
@@ -17,8 +21,9 @@ export function distanceKm(a: LatLon, b: LatLon): number {
 
 /**
  * Extra distance added by stopping at `via` on the way from `from` to `to`.
- * Straight-line, so it under-reads against real Swiss roads — treat it as a
- * comparison between candidates, not a routing estimate.
+ * Straight-line, so it under-reads against real Swiss roads. Trip mode uses
+ * it, and routeProgress below, only as the fallback when no road route is
+ * available — see src/lib/trip.ts.
  */
 export function detourKm(from: LatLon, to: LatLon, via: LatLon): number {
   return distanceKm(from, via) + distanceKm(via, to) - distanceKm(from, to);
