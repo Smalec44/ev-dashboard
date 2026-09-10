@@ -158,8 +158,8 @@ export function ResultsMap({
 
     // Reverse order so the best stop is drawn last, on top of the crowd; the
     // selected one last of all.
-    const ordered = [...stops].reverse();
-    const chosen = ordered.find((stop) => stop.station.id === selectedId);
+    const chosen = stops.find((stop) => stop.station.id === selectedId);
+    const ordered = [...stops].reverse().filter((stop) => stop !== chosen);
     if (chosen) ordered.push(chosen);
     ordered.forEach((stop) => {
       const rank = stops.indexOf(stop) + 1;

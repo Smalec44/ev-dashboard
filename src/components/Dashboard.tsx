@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { connectorPrices } from "@/data/metrics";
 import { REGIONS, findRegion } from "@/data/regions";
 import {
@@ -52,9 +52,10 @@ const MAX_RADIUS_KM = 25;
 /**
  * A nationwide feed puts thousands of stations behind a single query — Zürich
  * alone returns ~180, a long trip over 1600. Rendering every card is slow and
- * useless, and the list is already sorted, so only the head is worth showing.
+ * useless, so the list is paged and lives in a box of bounded height; the map
+ * shows the same page, so every dot has a card to jump to.
  */
-const RESULT_LIMIT = 50;
+const PAGE_SIZE = 20;
 
 /** Fraction of the route at each end treated as "still at the endpoint". */
 const ENDPOINT_MARGIN = 0.1;
@@ -161,6 +162,10 @@ export function Dashboard() {
   const [stopAt, setStopAt] = useState(DEFAULT_STOP_AT);
   // The station the map or a card was last clicked on; the top match until then.
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // The page is remembered together with the search it belongs to, so a new
+  // search starts on page one without an effect having to reset anything.
+  const [paging, setPaging] = useState<{ search: string; page: number }>({ search: "", page: 0 });
+  const listBox = useRef<HTMLDivElement>(null);
   const [radius, setRadius] = useState(DEFAULT_RADIUS_KM);
   // The federal feed is ~10 MB, so it is fetched at runtime rather than bundled.
   // The curated seed stations stand in until it arrives, and only until then:
@@ -341,8 +346,33 @@ export function Dashboard() {
     [ranked],
   );
   const flaggedCount = ranked.filter((r) => r.belowFoodThreshold).length;
+
+  // Everything that changes what the list contains, in one string.
+  const searchKey = [
+    mode,
+    region?.slug,
+    from?.slug,
+    to?.slug,
+    connector,
+    criteria.join(","),
+    radius,
+    maxDetour,
+    stopAt,
+    live.state === "done" ? live.at : "",
+  ].join("|");
+  const pageCount = Math.max(1, Math.ceil(ranked.length / PAGE_SIZE));
+  const page = paging.search === searchKey ? Math.min(paging.page, pageCount - 1) : 0;
+  const pageStart = page * PAGE_SIZE;
   // Memoised: the map redraws its dots whenever this changes identity.
-  const visible = useMemo(() => ranked.slice(0, RESULT_LIMIT), [ranked]);
+  const visible = useMemo(
+    () => ranked.slice(pageStart, pageStart + PAGE_SIZE),
+    [ranked, pageStart],
+  );
+
+  function goToPage(next: number) {
+    setPaging({ search: searchKey, page: Math.min(Math.max(next, 0), pageCount - 1) });
+    listBox.current?.scrollTo({ top: 0 });
+  }
 
   const selected =
     visible.find((item) => item.station.id === selectedId) ?? visible[0];
@@ -720,12 +750,15 @@ export function Dashboard() {
                 : `No ${connector === "ALL" ? "" : `${connector} `}charging spots within ${radius} km of ${region?.city}. Widen the radius, or switch the connector filter to All.`}
             </div>
           ) : (
-            <div className="space-y-4">
+            <div
+              ref={listBox}
+              className="max-h-[75vh] space-y-4 overflow-y-auto rounded-xl border border-border bg-background p-3"
+            >
               {visible.map((item, index) => (
                 <StationCard
                   key={item.station.id}
                   ranked={item}
-                  rank={index + 1}
+                  rank={pageStart + index + 1}
                   threshold={threshold}
                   detourKm={trip?.detours.get(item.station.id)}
                   routeProgress={trip?.progress.get(item.station.id)}
@@ -740,12 +773,34 @@ export function Dashboard() {
             </div>
           )}
 
-          {ranked.length > visible.length && (
-            <p className="text-xs text-muted">
-              Showing the {visible.length} best of {ranked.length} matches.
-              Narrow the search with the connector filter{" "}
-              {mode === "trip" ? "or a shorter detour" : "or another city"}.
-            </p>
+          {ranked.length > PAGE_SIZE && (
+            <nav
+              aria-label="Result pages"
+              className="flex flex-wrap items-center justify-between gap-3 text-sm"
+            >
+              <span className="text-muted tabular-nums">
+                {pageStart + 1}–{Math.min(pageStart + PAGE_SIZE, ranked.length)} of{" "}
+                {ranked.length} · page {page + 1} of {pageCount}
+              </span>
+              <span className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => goToPage(page - 1)}
+                  disabled={page === 0}
+                  className="rounded-lg border border-border bg-surface-muted px-3 py-1.5 text-xs font-medium transition-colors hover:text-accent disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  ← Previous
+                </button>
+                <button
+                  type="button"
+                  onClick={() => goToPage(page + 1)}
+                  disabled={page >= pageCount - 1}
+                  className="rounded-lg border border-border bg-surface-muted px-3 py-1.5 text-xs font-medium transition-colors hover:text-accent disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Next →
+                </button>
+              </span>
+            </nav>
           )}
 
           {mode === "trip" && ranked.length > 0 && (
