@@ -22,6 +22,20 @@ export const ATTRIBUTIONS = {
     licence: "ODbL",
     commercialUseRestricted: false,
   },
+  fso: {
+    source: "fso",
+    text: "Vehicle registrations: Federal Statistical Office (FSO), new registrations of road vehicles",
+    url: "https://www.pxweb.bfs.admin.ch/pxweb/de/px-x-1103020200_121/",
+    licence: "OPEN BY ASK",
+    commercialUseRestricted: false,
+  },
+  electrive: {
+    source: "electrive",
+    text: "EV news headlines: electrive.com",
+    url: "https://www.electrive.com/",
+    licence: "headlines and links only, © electrive",
+    commercialUseRestricted: false,
+  },
   geonames: {
     source: "geonames",
     text: "Place names, coordinates and population: GeoNames",
@@ -56,6 +70,8 @@ const ALWAYS_ACTIVE: Attribution[] = [
   ATTRIBUTIONS.bfe,
   ATTRIBUTIONS.osm,
   ATTRIBUTIONS.geonames,
+  ATTRIBUTIONS.fso,
+  ATTRIBUTIONS.electrive,
 ];
 
 export function activeAttributions(

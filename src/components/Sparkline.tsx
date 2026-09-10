@@ -4,7 +4,7 @@ const WIDTH = 320;
 const HEIGHT = 64;
 const PADDING_Y = 6;
 
-export function Sparkline({ points }: { points: TrendPoint[] }) {
+export function Sparkline({ points, label }: { points: TrendPoint[]; label: string }) {
   if (points.length < 2) return null;
 
   // Scale on complete months only — a part-counted month would otherwise drag
@@ -50,7 +50,7 @@ export function Sparkline({ points }: { points: TrendPoint[] }) {
         preserveAspectRatio="none"
         className="h-16 w-full"
         role="img"
-        aria-label={`Monthly BEV registrations, ${first.month} to ${last.month}`}
+        aria-label={`${label}, ${first.label} to ${last.label}`}
       >
         <polygon
           points={`0,${HEIGHT} ${line(settled)} ${lastSettled.x.toFixed(1)},${HEIGHT}`}
@@ -79,7 +79,7 @@ export function Sparkline({ points }: { points: TrendPoint[] }) {
         {/* Zero-length round-capped lines: dots that survive preserveAspectRatio="none". */}
         {coords.map(({ x, y, point }) => (
           <line
-            key={point.month}
+            key={point.label}
             x1={x}
             y1={y}
             x2={x}
@@ -95,10 +95,10 @@ export function Sparkline({ points }: { points: TrendPoint[] }) {
       <div className="mt-1.5 flex justify-between text-[10px] tabular-nums text-muted">
         {points.map((point) => (
           <span
-            key={point.month}
+            key={point.label}
             className={point.partial ? "font-medium text-warn" : undefined}
           >
-            {point.month}
+            {point.label}
             {point.partial && "*"}
           </span>
         ))}

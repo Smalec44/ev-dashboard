@@ -108,24 +108,34 @@ export interface Region extends LatLon {
 }
 
 export interface TrendPoint {
-  month: string;
+  label: string;
   value: number;
-  /** Current month: counted only up to `asOf`, so it reads low by design. */
+  /** Not yet complete (a running year or month), so it reads low by design. */
   partial?: boolean;
 }
 
-export interface NationalMetrics {
+/** New passenger-car registrations in one year, from the Federal Statistical Office. */
+export interface RegistrationYear {
   year: number;
-  asOf: string;
-  periodLabel: string;
-  newEvsSold: number;
-  newEvsSoldChangePct: number;
-  evShareOfNewCarsPct: number;
-  averageEvPriceChf: number;
-  averageEvPriceChangePct: number;
-  averageAcPricePerKwh: number;
-  averageAcPriceChangePct: number;
-  averageDcPricePerKwh: number;
-  averageDcPriceChangePct: number;
-  monthlyRegistrations: TrendPoint[];
+  /** Battery-electric only. */
+  bev: number;
+  /** All fuel types. */
+  total: number;
+}
+
+export interface NewsItem {
+  title: string;
+  url: string;
+  /** ISO timestamp. */
+  publishedAt: string;
+  source: string;
+}
+
+/** What /api/market returns: each part null when its source failed. */
+export interface MarketData {
+  fetchedAt: string;
+  registrations: RegistrationYear[] | null;
+  news: NewsItem[] | null;
+  /** "part: reason" per source that failed. */
+  errors: string[];
 }
