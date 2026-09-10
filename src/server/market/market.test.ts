@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseRss } from "./news.ts";
+import { fetchNewsByRegion, parseRss } from "./news.ts";
 import { summariseRegistrations } from "./registrations.ts";
 
 test("registrations fold fuel rows into a BEV count and a total per year", () => {
@@ -49,4 +49,52 @@ test("the RSS reader keeps well-formed items, decodes entities and drops the res
 
 test("the RSS reader stops at the requested count", () => {
   assert.equal(parseRss(FEED, "x", 1).length, 1);
+});
+
+const LINKLESS = `<rss version="2.0"><channel>
+<item><title>Permalink guid</title><link></link>
+<guid isPermaLink="true">https://x.example/guid</guid>
+<pubDate>Wed, 09 Sep 2026 17:00:00 +0000</pubDate></item>
+<item><title>Bare guid</title><guid>https://x.example/bare</guid>
+<pubDate>Wed, 09 Sep 2026 16:00:00 +0000</pubDate></item>
+<item><title>Opaque guid</title><guid isPermaLink="false">https://x.example/?p=1</guid>
+<pubDate>Wed, 09 Sep 2026 15:00:00 +0000</pubDate></item>
+<item><title>Atom href</title><link rel="alternate" href="https://x.example/atom"/>
+<pubDate>Wed, 09 Sep 2026 14:00:00 +0000</pubDate></item>
+<item><title>Nothing usable</title><guid>urn:uuid:1</guid>
+<pubDate>Wed, 09 Sep 2026 13:00:00 +0000</pubDate></item>
+</channel></rss>`;
+
+test("the RSS reader falls back to a permalink guid or an Atom href when <link> is empty", () => {
+  assert.deepEqual(
+    parseRss(LINKLESS, "x").map((item) => item.url),
+    ["https://x.example/guid", "https://x.example/bare", "https://x.example/atom"],
+  );
+});
+
+test("news fetches every region and reports each failure by region", async (t) => {
+  const responses: Record<string, () => Response> = {
+    "www.electrive.net": () => new Response(FEED),
+    "www.electrive.com": () => new Response("down", { status: 503 }),
+    "insideevs.com": () => {
+      throw new TypeError("fetch failed");
+    },
+  };
+  const fetchMock = t.mock.method(globalThis, "fetch", (input: string | URL | Request) => {
+    const url = new URL(input instanceof Request ? input.url : input);
+    const respond = responses[url.hostname];
+    assert.ok(respond, `unexpected fetch of ${url.href}`);
+    return Promise.resolve(respond());
+  });
+  const { news, errors } = await fetchNewsByRegion();
+  assert.equal(fetchMock.mock.callCount(), 3);
+  assert.ok(news.switzerland);
+  assert.equal(news.switzerland.length, 2);
+  assert.equal(news.switzerland[0]?.source, "electrive.net");
+  assert.equal(news.europe, null);
+  assert.equal(news.world, null);
+  assert.deepEqual(errors, [
+    "news/europe: www.electrive.com returned 503",
+    "news/world: fetch failed",
+  ]);
 });

@@ -131,11 +131,21 @@ export interface NewsItem {
   source: string;
 }
 
+/** The three news scopes, each fed by its own source. */
+export type NewsRegion = "switzerland" | "europe" | "world";
+
+export const NEWS_REGIONS: { id: NewsRegion; label: string }[] = [
+  { id: "switzerland", label: "Switzerland" },
+  { id: "europe", label: "Europe" },
+  { id: "world", label: "World" },
+];
+
 /** What /api/market returns: each part null when its source failed. */
 export interface MarketData {
   fetchedAt: string;
   registrations: RegistrationYear[] | null;
-  news: NewsItem[] | null;
-  /** "part: reason" per source that failed. */
+  /** Per region; null when that feed failed. */
+  news: Record<NewsRegion, NewsItem[] | null>;
+  /** "registrations: reason" or "news/<region>: reason" per source that failed. */
   errors: string[];
 }

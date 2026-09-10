@@ -31,9 +31,23 @@ export const ATTRIBUTIONS = {
   },
   electrive: {
     source: "electrive",
-    text: "EV news headlines: electrive.com",
+    text: "EV news headlines (Europe): electrive.com",
     url: "https://www.electrive.com/",
     licence: "headlines and links only, © electrive",
+    commercialUseRestricted: false,
+  },
+  electriveNet: {
+    source: "electrive.net",
+    text: "EV news headlines (Switzerland): electrive.net",
+    url: "https://www.electrive.net/",
+    licence: "headlines and links only, © electrive",
+    commercialUseRestricted: false,
+  },
+  insideevs: {
+    source: "insideevs",
+    text: "EV news headlines (World): InsideEVs",
+    url: "https://insideevs.com/",
+    licence: "headlines and links only, © Motorsport Network",
     commercialUseRestricted: false,
   },
   geonames: {
@@ -60,18 +74,21 @@ export const ATTRIBUTIONS = {
 } satisfies Record<string, Attribution>;
 
 /**
- * The three sources every render depends on: the federal feed for stations,
- * OpenStreetMap for the food and greenery around them, and GeoNames for the
- * town centres the search resolves against. Credit the ones actually in use —
- * naming a source the page does not draw on is its own kind of wrong, and
- * ElCom and Chargeprice are still only schema, so they stay behind a flag.
+ * The sources every render depends on: the federal feed for stations,
+ * OpenStreetMap for the food and greenery around them, GeoNames for the town
+ * centres the search resolves against, and the FSO figures and three news
+ * feeds behind the market panel. Credit the ones actually in use — naming a
+ * source the page does not draw on is its own kind of wrong, and ElCom and
+ * Chargeprice are still only schema, so they stay behind a flag.
  */
 const ALWAYS_ACTIVE: Attribution[] = [
   ATTRIBUTIONS.bfe,
   ATTRIBUTIONS.osm,
   ATTRIBUTIONS.geonames,
   ATTRIBUTIONS.fso,
+  ATTRIBUTIONS.electriveNet,
   ATTRIBUTIONS.electrive,
+  ATTRIBUTIONS.insideevs,
 ];
 
 export function activeAttributions(
