@@ -162,6 +162,9 @@ const DEFAULT_TARIFF: Record<ConnectorType, number> = { AC: 0.45, DC: 0.65 };
  */
 const CH_BOUNDS = { minLat: 45.5, maxLat: 48.0, minLon: 5.5, maxLon: 11.0 };
 
+/** The most a three-phase AC connector delivers; above it, the current is DC. */
+const MAX_AC_KW = 43;
+
 function parseCoords(record: FeedRecord): LatLon | null {
   const raw = record.GeoCoordinates?.Google;
   if (!raw) return null;
@@ -251,7 +254,11 @@ export function buildSites(records: FeedRecord[]): Site[] {
       0,
       ...facilities.map((f) => Number(f.power)).filter(Number.isFinite),
     );
-    const isDc = facilities.some((f) => f.powertype === "DC");
+    // Operators file some DC chargers under an AC power type — Tesla's
+    // 250 kW Superchargers among them. Three-phase AC tops out at 43 kW,
+    // so anything above that is DC whatever the label says.
+    const isDc =
+      facilities.some((f) => f.powertype === "DC") || power > MAX_AC_KW;
 
     const existing = sites.get(key);
     if (existing) {

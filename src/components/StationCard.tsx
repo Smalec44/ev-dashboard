@@ -223,6 +223,24 @@ export function StationCard({
           )}
         </div>
         <div className="flex shrink-0 items-start gap-2">
+          {onSelect && (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onSelect();
+              }}
+              aria-pressed={selected}
+              title="Show this station on the map and use it for the route"
+              className={`rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${
+                selected
+                  ? "border-accent bg-accent-soft text-accent"
+                  : "border-border bg-surface-muted hover:text-accent"
+              }`}
+            >
+              {selected ? "Selected ✓" : "Select"}
+            </button>
+          )}
           {route && (
             <a
               href={routeViaStationUrl(route.from, station, route.to)}
@@ -234,7 +252,16 @@ export function StationCard({
               Route via here <span aria-hidden="true">↗</span>
             </a>
           )}
-          <div className="rounded-lg bg-accent-soft px-3 py-1.5 text-center">
+          <div
+            className="rounded-lg bg-accent-soft px-3 py-1.5 text-center"
+            title={
+              Object.keys(breakdown).length > 0
+                ? `Average of ${Object.entries(breakdown)
+                    .map(([criterion, value]) => `${CRITERION_LABELS[criterion] ?? criterion} ${value}`)
+                    .join(", ")}`
+                : "Pick a ranking criterion to score this station"
+            }
+          >
             <div className="text-lg font-semibold tabular-nums text-accent">
               {score}
             </div>

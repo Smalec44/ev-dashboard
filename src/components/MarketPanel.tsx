@@ -56,7 +56,8 @@ function RegistrationTiles({
           label="Share of new cars"
           value={share === null ? "—" : `${share.toFixed(1)}%`}
           {...(shareChange !== undefined && { changePct: shareChange })}
-          footnote={`Battery-electric, ${latest.year} · points vs ${previous?.year ?? "—"}`}
+          changeUnit="pts"
+          footnote={`Battery-electric, ${latest.year} · vs ${previous?.year ?? "—"}`}
         />
         <MetricCard
           label="AC charging"

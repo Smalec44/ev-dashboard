@@ -467,7 +467,7 @@ export function Dashboard() {
               onClick={swapDirection}
               title="Swap direction"
               aria-label="Swap direction"
-              className="mt-2 self-end rounded-lg border border-border bg-surface-muted px-3 py-2 text-base text-muted transition-colors hover:text-foreground sm:mt-0"
+              className="mt-1 justify-self-center rounded-lg border border-border bg-surface-muted px-3 py-2 text-base text-muted transition-colors hover:text-foreground sm:mt-0 sm:self-end"
             >
               <span aria-hidden="true">⇄</span>
             </button>

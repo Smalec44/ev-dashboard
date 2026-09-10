@@ -88,7 +88,9 @@ export function Sparkline({ points, label }: { points: TrendPoint[]; label: stri
             strokeWidth={point.partial ? 3 : 4}
             vectorEffect="non-scaling-stroke"
             className={point.partial ? "stroke-muted" : "stroke-accent"}
-          />
+          >
+            <title>{`${point.label}: ${point.value.toLocaleString("de-CH")}`}</title>
+          </line>
         ))}
       </svg>
 

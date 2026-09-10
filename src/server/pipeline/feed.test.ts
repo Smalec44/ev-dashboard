@@ -71,6 +71,17 @@ test("parking-bay numbers in the name do not keep bays of one car park apart", (
   assert.equal(sides.length, 2);
 });
 
+test("a charger over 43 kW is DC whatever power type the operator filed", () => {
+  const [site] = buildSites([
+    record({ ChargingFacilities: [{ power: 250, powertype: "AC_3_PHASE" }] }),
+  ]);
+  assert.equal(site?.connectorType, "DC");
+  const [slow] = buildSites([
+    record({ ChargingFacilities: [{ power: 22, powertype: "AC_3_PHASE" }] }),
+  ]);
+  assert.equal(slow?.connectorType, "AC");
+});
+
 test("restricted-access and off-map records are dropped", () => {
   const sites = buildSites([
     record({ Accessibility: "Restricted access" }),
