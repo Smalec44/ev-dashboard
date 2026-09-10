@@ -37,6 +37,9 @@ export interface MapArea {
 /** The first few stops get bigger dots, so the top of the list reads on the map. */
 const HIGHLIGHTED_STOPS = 3;
 
+/** Route, endpoints and the selected stop: dark, because the tiles are always light. */
+const MAP_INK = "#12161c";
+
 /**
  * The results on a map: the road (or, without one, the direct line) with its
  * ends and the planned break, or the searched town with its radius, plus one
@@ -126,7 +129,9 @@ export function ResultsMap({
 
     const styles = getComputedStyle(container.current);
     const accent = styles.getPropertyValue("--accent").trim() || "#0f7a5a";
-    const foreground = styles.getPropertyValue("--foreground").trim() || "#12161c";
+    // Not the theme's foreground: the tiles are light in either theme, and
+    // the dark theme's near-white text colour vanished on them.
+    const foreground = MAP_INK;
 
     const endpoint = (point: LatLon & { city: string }) =>
       L.circleMarker([point.lat, point.lon], {
