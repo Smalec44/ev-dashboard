@@ -522,30 +522,6 @@ export interface StationFeed {
   stations: ChargingStation[];
 }
 
-/** A curated entry and a feed entry this close are the same physical site. */
-const DEDUPE_METRES = 200;
-
-/**
- * Federal feed plus the curated overlay. Where both describe the same site the
- * curated record wins, because it is the one with food and uptime detail.
- *
- * Matched on distance alone. This used to also require the two records to
- * agree on the city name, which quietly let duplicates through: operators
- * write whatever they like into the feed's City field, so a curated Zürich
- * site sat 40 m from a feed record labelled "Zurich" and both were kept.
- * Two records 200 m apart are the same physical site whatever they call the
- * town, and the name adds nothing the coordinates have not already settled.
- */
-export function mergeStations(feed: ChargingStation[]): ChargingStation[] {
-  const kept = feed.filter(
-    (station) =>
-      !CURATED_STATIONS.some(
-        (curated) => distanceKm(curated, station) * 1000 <= DEDUPE_METRES,
-      ),
-  );
-  return [...CURATED_STATIONS, ...kept];
-}
-
 /**
  * Radius for a region search. Municipal boundaries are not what a driver cares
  * about — a charger 2 km outside Aarau is still "in Aarau" for anyone parking

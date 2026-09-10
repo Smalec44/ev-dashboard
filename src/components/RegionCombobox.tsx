@@ -55,7 +55,9 @@ export function RegionCombobox({
 }) {
   const listId = useId();
   const [open, setOpen] = useState(false);
-  const [highlighted, setHighlighted] = useState(0);
+  // -1 is "nothing yet": ArrowDown then lands on the first entry rather than
+  // skipping past it, while Enter alone still takes the first match.
+  const [highlighted, setHighlighted] = useState(-1);
   const options = useMemo(() => matchRegions(value), [value]);
 
   function pick(region: Region) {
@@ -71,11 +73,18 @@ export function RegionCombobox({
         return;
       }
       const step = event.key === "ArrowDown" ? 1 : -1;
-      setHighlighted((i) => (i + step + options.length) % options.length);
+      setHighlighted((i) =>
+        i < 0
+          ? step > 0
+            ? 0
+            : options.length - 1
+          : (i + step + options.length) % options.length,
+      );
     } else if (event.key === "Enter") {
-      if (open && options[highlighted]) {
+      const choice = options[highlighted] ?? options[0];
+      if (open && choice) {
         event.preventDefault();
-        pick(options[highlighted]);
+        pick(choice);
       }
     } else if (event.key === "Escape") {
       setOpen(false);
@@ -99,7 +108,9 @@ export function RegionCombobox({
         aria-controls={listId}
         aria-autocomplete="list"
         aria-activedescendant={
-          showList ? `${listId}-${options[highlighted]?.slug}` : undefined
+          showList && options[highlighted]
+            ? `${listId}-${options[highlighted].slug}`
+            : undefined
         }
         aria-invalid={invalid}
         autoComplete="off"
@@ -109,7 +120,7 @@ export function RegionCombobox({
           onChange(event.target.value);
           // A fresh query gets a fresh cursor: keeping the old index would
           // highlight whichever place happened to land in that slot.
-          setHighlighted(0);
+          setHighlighted(-1);
           setOpen(true);
         }}
         onFocus={() => setOpen(true)}

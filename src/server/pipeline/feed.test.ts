@@ -32,6 +32,38 @@ test("charge points sharing a station id become one site with that many stalls",
   assert.equal(sites[0].canton, "ZH");
 });
 
+test("same-named records a few metres apart are one site, further apart two", () => {
+  const twins = buildSites([
+    record({ ChargingStationId: "CH*XXX*P9", EvseID: "E9", GeoCoordinates: { Google: "47.37690 8.54170" } }),
+    record({ ChargingStationId: "CH*XXX*P8", EvseID: "E8", GeoCoordinates: { Google: "47.37700 8.54180" } }),
+  ]);
+  assert.equal(twins.length, 1);
+  assert.equal(twins[0].stalls, 2);
+  assert.equal(twins[0].id, "CH*XXX*P8");
+  assert.deepEqual(twins[0].evseIds.sort(), ["E8", "E9"]);
+
+  const apart = buildSites([
+    record({ ChargingStationId: "CH*XXX*P9", EvseID: "E9" }),
+    record({ ChargingStationId: "CH*XXX*P8", EvseID: "E8", GeoCoordinates: { Google: "47.3820 8.5417" } }),
+  ]);
+  assert.equal(apart.length, 2);
+});
+
+test("parking-bay numbers in the name do not keep bays of one car park apart", () => {
+  const bays = buildSites([
+    record({ ChargingStationId: "A", EvseID: "E1", ChargingStationNames: [{ lang: "de", value: "SUVA Neumühlequai 6 PP202" }] }),
+    record({ ChargingStationId: "B", EvseID: "E2", ChargingStationNames: [{ lang: "de", value: "SUVA Neumühlequai 6 PP204" }] }),
+    record({ ChargingStationId: "C", EvseID: "E3", ChargingStationNames: [{ lang: "de", value: "SUVA Neumühlequai 6 PPEinfahrt" }] }),
+  ]);
+  assert.deepEqual(bays.map((s) => s.stalls).sort(), [1, 2]);
+  assert.equal(bays.find((s) => s.stalls === 2)?.name, "SUVA Neumühlequai 6");
+  const sides = buildSites([
+    record({ ChargingStationId: "A", EvseID: "E1", ChargingStationNames: [{ lang: "de", value: "Raststätte Nord" }] }),
+    record({ ChargingStationId: "B", EvseID: "E2", ChargingStationNames: [{ lang: "de", value: "Raststätte Süd" }] }),
+  ]);
+  assert.equal(sides.length, 2);
+});
+
 test("restricted-access and off-map records are dropped", () => {
   const sites = buildSites([
     record({ Accessibility: "Restricted access" }),

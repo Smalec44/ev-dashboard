@@ -14,7 +14,7 @@ const feed = JSON.parse(
 ) as StationFeed;
 
 test("the station file holds the whole country, not a partial pull", () => {
-  assert.ok(feed.stations.length > 10_000, `only ${feed.stations.length} stations`);
+  assert.ok(feed.stations.length > 7_500, `only ${feed.stations.length} stations`);
   assert.ok(Number.isFinite(Date.parse(feed.generatedAt)), "generatedAt is not a date");
 });
 

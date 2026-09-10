@@ -5,6 +5,7 @@
  */
 import { gunzipSync } from "node:zlib";
 import { REGIONS } from "../../data/regions.ts";
+import { haversineMetres } from "./geo.ts";
 import type { ChargingStation, ConnectorType, LatLon, LiveStatus } from "../../lib/types.ts";
 
 export const EVSE_URL =
@@ -270,7 +271,7 @@ export function buildSites(records: FeedRecord[]): Site[] {
     });
   }
 
-  return [...sites.values()].map((site) => {
+  return mergeTwins([...sites.values()]).map((site) => {
     const connectorType: ConnectorType = site.isDc ? "DC" : "AC";
     const tariff = TARIFFS[site.operator] ?? DEFAULT_TARIFF;
     return {
@@ -292,6 +293,63 @@ export function buildSites(records: FeedRecord[]): Site[] {
       evseIds: site.evseIds,
     };
   });
+}
+
+/** Same operator, same name, this close together: one site, not two. */
+const TWIN_METRES = 50;
+
+/**
+ * Parking-bay suffixes some operators put in the name — "… PP202", "… P 14",
+ * "… Platz 3" — so that the bays of one car park compare equal. Anything
+ * else in the name is kept, so "Nord" and "Süd" stay two sites.
+ */
+const BAY_SUFFIX = /[\s,\-–]*(?:pp|p|platz|nr\.?|#)\s?\d+[a-z]?$/i;
+
+function twinKey(site: Accumulator): string {
+  const name = site.name.trim().toLowerCase().replace(BAY_SUFFIX, "").trim();
+  return `${site.operator}\u0000${name}`;
+}
+
+/**
+ * Some operators give every stall its own ChargingStationId, so a four-stall
+ * site arrives as four identical records — "Tamoil Herrlisberg Nord" listed
+ * four times in a row, each with one stall. Name plus proximity is the only
+ * signal the feed leaves to put them back together.
+ */
+function mergeTwins(sites: Accumulator[]): Accumulator[] {
+  const groups = new Map<string, Accumulator[]>();
+  const kept: Accumulator[] = [];
+  for (const site of sites) {
+    const key = twinKey(site);
+    const group = groups.get(key) ?? [];
+    const point = { lat: site.latSum / site.stalls, lon: site.lonSum / site.stalls };
+    const twin = group.find(
+      (other) =>
+        haversineMetres(point, {
+          lat: other.latSum / other.stalls,
+          lon: other.lonSum / other.stalls,
+        }) <= TWIN_METRES,
+    );
+    if (twin) {
+      twin.stalls += site.stalls;
+      twin.maxPowerKw = Math.max(twin.maxPowerKw, site.maxPowerKw);
+      twin.isDc ||= site.isDc;
+      twin.publiclyAccessible ||= site.publiclyAccessible;
+      twin.latSum += site.latSum;
+      twin.lonSum += site.lonSum;
+      twin.evseIds.push(...site.evseIds);
+      // The lowest id names the merged site, so the outcome does not depend
+      // on the order the feed happened to list the records in.
+      if (site.id < twin.id) twin.id = site.id;
+      // A merged site is the car park, not one of its bays.
+      twin.name = twin.name.replace(BAY_SUFFIX, "").trim() || twin.name;
+      continue;
+    }
+    group.push(site);
+    groups.set(key, group);
+    kept.push(site);
+  }
+  return kept;
 }
 
 /**

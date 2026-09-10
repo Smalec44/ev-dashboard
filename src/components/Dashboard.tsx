@@ -4,8 +4,8 @@ import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { connectorPrices } from "@/data/metrics";
 import { REGIONS, findRegion } from "@/data/regions";
 import {
+  CURATED_STATIONS,
   DEFAULT_RADIUS_KM,
-  mergeStations,
   stationsNearRegion,
   type StationFeed,
 } from "@/data/stations";
@@ -120,6 +120,28 @@ export function Dashboard() {
   const [query, setQuery] = useState("Zürich");
   const [fromQuery, setFromQuery] = useState("Zürich");
   const [toQuery, setToQuery] = useState("Lugano");
+  // While a name is half-typed nothing matches, and dropping the results for
+  // those keystrokes made the whole page jump. The last place that resolved
+  // stays on screen until the new one does; the message above says so.
+  const [lastRegion, setLastRegion] = useState(() => findRegion("Zürich"));
+  const [lastFrom, setLastFrom] = useState(() => findRegion("Zürich"));
+  const [lastTo, setLastTo] = useState(() => findRegion("Lugano"));
+
+  function changeQuery(next: string) {
+    setQuery(next);
+    const found = findRegion(next);
+    if (found) setLastRegion(found);
+  }
+  function changeFromQuery(next: string) {
+    setFromQuery(next);
+    const found = findRegion(next);
+    if (found) setLastFrom(found);
+  }
+  function changeToQuery(next: string) {
+    setToQuery(next);
+    const found = findRegion(next);
+    if (found) setLastTo(found);
+  }
   const [criteria, setCriteria] = useState<Criterion[]>([
     ...DEFAULT_CRITERIA,
     ...DEFAULT_REGION_CRITERIA,
@@ -130,9 +152,11 @@ export function Dashboard() {
   const [stopAt, setStopAt] = useState(DEFAULT_STOP_AT);
   const [radius, setRadius] = useState(DEFAULT_RADIUS_KM);
   // The federal feed is ~10 MB, so it is fetched at runtime rather than bundled.
-  // The curated seed stations render immediately and are joined on arrival.
+  // The curated seed stations stand in until it arrives, and only until then:
+  // they carry hand-written uptime and restaurant ratings that no real record
+  // has, and mixed into the feed they won every ranking they appeared in.
   const [feedStations, setFeedStations] = useState<ChargingStation[]>([]);
-  const stations = useMemo(() => mergeStations(feedStations), [feedStations]);
+  const stations = feedStations.length > 0 ? feedStations : CURATED_STATIONS;
   const [feed, setFeed] = useState<"loading" | "ready" | "error">("loading");
   /** When the static build was generated; null until it has loaded. */
   const [generatedAt, setGeneratedAt] = useState<string | null>(null);
@@ -167,11 +191,14 @@ export function Dashboard() {
     };
   }, []);
 
-  const region = useMemo(() => findRegion(query), [query]);
-  const from = useMemo(() => findRegion(fromQuery), [fromQuery]);
-  const to = useMemo(() => findRegion(toQuery), [toQuery]);
-  const endpointsResolved = from !== null && to !== null;
-  const sameEndpoints = endpointsResolved && from.slug === to.slug;
+  const matchedRegion = useMemo(() => findRegion(query), [query]);
+  const matchedFrom = useMemo(() => findRegion(fromQuery), [fromQuery]);
+  const matchedTo = useMemo(() => findRegion(toQuery), [toQuery]);
+  const region = matchedRegion ?? lastRegion;
+  const from = matchedFrom ?? lastFrom;
+  const to = matchedTo ?? lastTo;
+  const endpointsResolved = matchedFrom !== null && matchedTo !== null;
+  const sameEndpoints = from !== null && to !== null && from.slug === to.slug;
 
   const byConnector = useMemo(
     () =>
@@ -330,6 +357,8 @@ export function Dashboard() {
   function swapDirection() {
     setFromQuery(toQuery);
     setToQuery(fromQuery);
+    setLastFrom(lastTo);
+    setLastTo(lastFrom);
   }
 
   function toggleCriterion(id: Criterion) {
@@ -366,7 +395,7 @@ export function Dashboard() {
             id="region"
             label="Search region or city"
             value={query}
-            onChange={setQuery}
+            onChange={changeQuery}
             placeholder="e.g. Basel, Lausanne, TI"
           />
         ) : (
@@ -375,9 +404,9 @@ export function Dashboard() {
               id="from"
               label="From"
               value={fromQuery}
-              onChange={setFromQuery}
+              onChange={changeFromQuery}
               placeholder="e.g. Chur, Sion, Bellinzona"
-              invalid={fromQuery.trim() !== "" && from === null}
+              invalid={fromQuery.trim() !== "" && matchedFrom === null}
             />
             <button
               type="button"
@@ -392,9 +421,9 @@ export function Dashboard() {
               id="to"
               label="To"
               value={toQuery}
-              onChange={setToQuery}
+              onChange={changeToQuery}
               placeholder="e.g. Lugano, Genève, St. Gallen"
-              invalid={toQuery.trim() !== "" && to === null}
+              invalid={toQuery.trim() !== "" && matchedTo === null}
             />
           </div>
         )}
@@ -460,6 +489,10 @@ export function Dashboard() {
               <span className="tabular-nums">{Math.round(stopAt * 100)}%</span>
               <span>{to?.city ?? "End"}</span>
             </div>
+            <p className="mt-1 text-xs text-muted">
+              Where along the way you would like to stop. With “Near the stop
+              point” on, stations close to this point rank higher.
+            </p>
           </div>
         )}
 
@@ -486,6 +519,10 @@ export function Dashboard() {
               onChange={(event) => setMaxDetour(Number(event.target.value))}
               className="mt-2 w-full accent-accent"
             />
+            <p className="mt-1 text-xs text-muted">
+              How far off the direct line a station may sit. Measured as the
+              crow flies, so the road adds some on top.
+            </p>
           </div>
         )}
 
@@ -545,20 +582,21 @@ export function Dashboard() {
         </button>
       </div>
 
-      {mode === "region" && !region && query.trim() !== "" && (
+      {mode === "region" && !matchedRegion && query.trim() !== "" && (
         <div className="rounded-xl border border-border bg-surface p-5 text-sm text-muted">
           No region matched “{query}”. Try a city like Bern, Lugano, or a canton
-          code like ZH.
+          code like ZH.{region && ` Still showing ${region.city} meanwhile.`}
         </div>
       )}
 
       {mode === "trip" && !endpointsResolved && (
         <div className="rounded-xl border border-border bg-surface p-5 text-sm text-muted">
-          {from === null && to === null
+          {matchedFrom === null && matchedTo === null
             ? "Neither place was recognised."
-            : `No place matched “${from === null ? fromQuery : toQuery}”.`}{" "}
+            : `No place matched “${matchedFrom === null ? fromQuery : toQuery}”.`}{" "}
           Start typing and pick from the suggestions — any of the{" "}
           {REGIONS.length.toLocaleString("de-CH")} listed towns works.
+          {trip && ` Still showing ${trip.from.city} → ${trip.to.city} meanwhile.`}
         </div>
       )}
 
@@ -568,9 +606,7 @@ export function Dashboard() {
         </div>
       )}
 
-      {(mode === "trip"
-        ? endpointsResolved && !sameEndpoints
-        : Boolean(region)) && (
+      {(mode === "trip" ? Boolean(trip) : Boolean(region)) && (
         <>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
