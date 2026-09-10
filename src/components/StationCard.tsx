@@ -39,6 +39,11 @@ const liveTimeFormat = new Intl.DateTimeFormat("en-CH", {
   timeZone: "Europe/Zurich",
 });
 
+/** DOM id of a station's card, so a map click can scroll the list to it. */
+export function cardElementId(stationId: string): string {
+  return `station-${stationId}`;
+}
+
 /** "4 h", "90 min", "1.5 h": whatever reads most naturally for the length. */
 function formatStay(minutes: number): string {
   if (minutes < 60) return `${minutes} min`;
@@ -136,6 +141,8 @@ export function StationCard({
   searchedCity,
   route,
   now,
+  selected = false,
+  onSelect,
 }: {
   ranked: RankedStation;
   rank: number;
@@ -150,12 +157,22 @@ export function StationCard({
   route?: { from: Region; to: Region } | undefined;
   /** Client clock for "open now", null until mount (see Dashboard). */
   now: Date | null;
+  /** Highlighted as the station the route button and the map refer to. */
+  selected?: boolean;
+  onSelect?: (() => void) | undefined;
 }) {
   const { station, score, foodScore, foodKnown, belowFoodThreshold, breakdown } =
     ranked;
 
   return (
-    <article className="rounded-xl border border-border bg-surface p-5">
+    <article
+      id={cardElementId(station.id)}
+      onClick={onSelect}
+      aria-current={selected ? "true" : undefined}
+      className={`rounded-xl border bg-surface p-5 transition-colors ${
+        selected ? "border-accent ring-1 ring-accent" : "border-border"
+      } ${onSelect ? "cursor-pointer" : ""}`}
+    >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">

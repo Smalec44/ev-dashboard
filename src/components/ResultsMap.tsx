@@ -42,10 +42,15 @@ export function ResultsMap({
   route,
   area,
   stops,
+  selectedId,
+  onSelect,
 }: {
   route?: MapRoute;
   area?: MapArea;
   stops: RankedStation[];
+  /** Drawn larger and on top; clicking any dot reports it here. */
+  selectedId: string | null;
+  onSelect: (stationId: string) => void;
 }) {
   const container = useRef<HTMLDivElement>(null);
   // State rather than refs: the drawing effects key on the instance, so a
@@ -151,24 +156,32 @@ export function ResultsMap({
       endpoint(area.centre);
     }
 
-    // Reverse order so the best stop is drawn last, on top of the crowd.
-    [...stops].reverse().forEach((stop, reverseIndex) => {
-      const rank = stops.length - reverseIndex;
+    // Reverse order so the best stop is drawn last, on top of the crowd; the
+    // selected one last of all.
+    const ordered = [...stops].reverse();
+    const chosen = ordered.find((stop) => stop.station.id === selectedId);
+    if (chosen) ordered.push(chosen);
+    ordered.forEach((stop) => {
+      const rank = stops.indexOf(stop) + 1;
+      const isSelected = stop.station.id === selectedId;
       const top = rank <= HIGHLIGHTED_STOPS;
       L.circleMarker([stop.station.lat, stop.station.lon], {
-        radius: top ? 8 : 5,
-        color: top ? "#fff" : accent,
-        weight: top ? 2 : 1,
-        fillColor: accent,
-        fillOpacity: top ? 1 : 0.55,
+        radius: isSelected ? 11 : top ? 8 : 5,
+        color: isSelected || top ? "#fff" : accent,
+        weight: isSelected ? 3 : top ? 2 : 1,
+        fillColor: isSelected ? foreground : accent,
+        fillOpacity: isSelected || top ? 1 : 0.55,
+        // Leaflet's default is the map's dragging hand; a dot is a target.
+        className: "cursor-pointer",
       })
         .bindTooltip(`#${rank} ${stop.station.name} · ${stop.score}`, {
           direction: "top",
           offset: [0, -6],
         })
+        .on("click", () => onSelect(stop.station.id))
         .addTo(layer);
     });
-  }, [engine, route, area, stops]);
+  }, [engine, route, area, stops, selectedId, onSelect]);
 
   return (
     <div

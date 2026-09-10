@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { connectorPrices } from "@/data/metrics";
 import { REGIONS, findRegion } from "@/data/regions";
 import {
@@ -10,6 +10,7 @@ import {
   type StationFeed,
 } from "@/data/stations";
 import { detourKm as computeDetour, distanceKm, routeProgress } from "@/lib/geo";
+import { routeViaStationUrl, stationMapUrl } from "@/lib/maps";
 import type { ChargingStation } from "@/lib/types";
 import {
   DEFAULT_CRITERIA,
@@ -30,7 +31,7 @@ const MODE_ONLY = new Set<Criterion>(
 import { RankingControls, type ConnectorFilter } from "./RankingControls";
 import { RegionCombobox } from "./RegionCombobox";
 import { ResultsMap, type MapArea, type MapRoute } from "./ResultsMap";
-import { StationCard } from "./StationCard";
+import { StationCard, cardElementId } from "./StationCard";
 import {
   applyRefresh,
   scopeToParams,
@@ -57,6 +58,14 @@ const RESULT_LIMIT = 50;
 
 /** Fraction of the route at each end treated as "still at the endpoint". */
 const ENDPOINT_MARGIN = 0.1;
+
+/**
+ * How far along the route a stop may sit from the chosen break, either way.
+ * The break slider used to be a preference the score nudged towards, which
+ * meant a strong station 80 km from the chosen point still topped the list.
+ * Now it is a window: only stations inside it are candidates at all.
+ */
+const STOP_WINDOW_KM = 20;
 
 /** The break slider stays inside the margins: a stop at 0% is not a stop. */
 const STOP_AT_MIN = ENDPOINT_MARGIN;
@@ -150,6 +159,8 @@ export function Dashboard() {
   const [connector, setConnector] = useState<ConnectorFilter>("ALL");
   const [maxDetour, setMaxDetour] = useState(MAX_DETOUR_KM);
   const [stopAt, setStopAt] = useState(DEFAULT_STOP_AT);
+  // The station the map or a card was last clicked on; the top match until then.
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [radius, setRadius] = useState(DEFAULT_RADIUS_KM);
   // The federal feed is ~10 MB, so it is fetched at runtime rather than bundled.
   // The curated seed stations stand in until it arrives, and only until then:
@@ -226,14 +237,13 @@ export function Dashboard() {
       candidates.push(station);
     }
 
-    // Stations sitting in the origin or destination city are not "stops on the
-    // way". Drop the end stretches, but fall back to the full set rather than
-    // showing nothing when the two places are close together.
-    const middle = candidates.filter((s) => {
-      const along = progress.get(s.id) ?? 0.5;
-      return along >= ENDPOINT_MARGIN && along <= 1 - ENDPOINT_MARGIN;
-    });
-    const usedEndpoints = middle.length === 0;
+    // Only stations near the chosen break are stops at all; the rest of the
+    // corridor is scenery. The window is in km, so a short trip gets the
+    // same tolerance as a long one.
+    const window = STOP_WINDOW_KM / directKm;
+    const nearBreak = candidates.filter(
+      (s) => Math.abs((progress.get(s.id) ?? 0.5) - stopAt) <= window,
+    );
 
     return {
       from,
@@ -241,10 +251,10 @@ export function Dashboard() {
       directKm,
       detours,
       progress,
-      candidates: usedEndpoints ? candidates : middle,
-      usedEndpoints,
+      candidates: nearBreak,
+      corridorCount: candidates.length,
     };
-  }, [mode, sameEndpoints, from, to, byConnector, maxDetour]);
+  }, [mode, sameEndpoints, from, to, byConnector, maxDetour, stopAt]);
 
   const nearby = useMemo(() => {
     if (mode !== "region" || !region) return null;
@@ -333,6 +343,20 @@ export function Dashboard() {
   const flaggedCount = ranked.filter((r) => r.belowFoodThreshold).length;
   // Memoised: the map redraws its dots whenever this changes identity.
   const visible = useMemo(() => ranked.slice(0, RESULT_LIMIT), [ranked]);
+
+  const selected =
+    visible.find((item) => item.station.id === selectedId) ?? visible[0];
+
+  const select = useCallback((id: string, scrollTo: boolean) => {
+    setSelectedId(id);
+    if (scrollTo) {
+      // Instant, not smooth: the re-render that follows the click cancels a
+      // smooth scroll in Chrome, and the card is often thousands of px away.
+      document.getElementById(cardElementId(id))?.scrollIntoView({ block: "center" });
+    }
+  }, []);
+  // Stable, so the map does not redraw its dots on every clock tick.
+  const selectFromMap = useCallback((id: string) => select(id, true), [select]);
 
   const mapRoute = useMemo<MapRoute | undefined>(
     () => (trip ? { from: trip.from, to: trip.to, stopAt } : undefined),
@@ -490,8 +514,9 @@ export function Dashboard() {
               <span>{to?.city ?? "End"}</span>
             </div>
             <p className="mt-1 text-xs text-muted">
-              Where along the way you would like to stop. With “Near the stop
-              point” on, stations close to this point rank higher.
+              Where along the way you would like to stop. Only stations within{" "}
+              {STOP_WINDOW_KM} km of this point are listed; “Near the stop
+              point” ranks the closest first.
             </p>
           </div>
         )}
@@ -625,7 +650,7 @@ export function Dashboard() {
               </h2>
               <p className="text-sm text-muted">
                 {mode === "trip" && trip
-                  ? `${Math.round(trip.directKm)} km direct · ${ranked.length} stop${ranked.length === 1 ? "" : "s"} within ${maxDetour} km`
+                  ? `${Math.round(trip.directKm)} km direct · ${ranked.length} stop${ranked.length === 1 ? "" : "s"} within ${STOP_WINDOW_KM} km of the break, ${maxDetour} km off the line`
                   : `${ranked.length} charging ${ranked.length === 1 ? "spot" : "spots"} within ${radius} km`}
                 {flaggedCount > 0 &&
                   ` · ${flaggedCount} flagged for thin food nearby`}
@@ -647,10 +672,39 @@ export function Dashboard() {
             </div>
           </div>
 
+          {selected && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-surface px-4 py-3 text-sm">
+              <span className="min-w-0">
+                <span className="text-muted">Selected: </span>
+                <span className="font-medium">{selected.station.name}</span>
+                <span className="text-muted">
+                  {" · "}
+                  {selected.station.city} · click a dot on the map or a card to
+                  change
+                </span>
+              </span>
+              <a
+                href={
+                  trip
+                    ? routeViaStationUrl(trip.from, selected.station, trip.to)
+                    : stationMapUrl(selected.station)
+                }
+                target="_blank"
+                rel="noreferrer"
+                className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-background transition-opacity hover:opacity-90"
+              >
+                {trip ? "Open route in Google Maps" : "Open in Google Maps"}{" "}
+                <span aria-hidden="true">↗</span>
+              </a>
+            </div>
+          )}
+
           <ResultsMap
             {...(mapRoute && { route: mapRoute })}
             {...(mapArea && { area: mapArea })}
             stops={visible}
+            selectedId={selected?.station.id ?? null}
+            onSelect={selectFromMap}
           />
 
           {criteria.length === 0 && (
@@ -662,7 +716,7 @@ export function Dashboard() {
           {ranked.length === 0 ? (
             <div className="rounded-xl border border-border bg-surface p-5 text-sm text-muted">
               {mode === "trip"
-                ? `No charging spots within ${maxDetour} km of the direct line. Widen the detour, or switch the connector filter to All.`
+                ? `No charging spots within ${STOP_WINDOW_KM} km of the break point${trip && trip.corridorCount > 0 ? ` (${trip.corridorCount} elsewhere along the way)` : ""}. Move the break, widen the detour, or switch the connector filter to All.`
                 : `No ${connector === "ALL" ? "" : `${connector} `}charging spots within ${radius} km of ${region?.city}. Widen the radius, or switch the connector filter to All.`}
             </div>
           ) : (
@@ -679,6 +733,8 @@ export function Dashboard() {
                   searchedCity={region?.city}
                   route={trip ? { from: trip.from, to: trip.to } : undefined}
                   now={now}
+                  selected={selected?.station.id === item.station.id}
+                  onSelect={() => select(item.station.id, false)}
                 />
               ))}
             </div>
@@ -694,8 +750,6 @@ export function Dashboard() {
 
           {mode === "trip" && ranked.length > 0 && (
             <p className="text-xs text-muted">
-              {trip?.usedEndpoints &&
-                "These two places are close enough that every stop sits near one end, so endpoint stations are included. "}
               Detours are straight-line distances, so real road numbers will be
               higher — use them to compare candidates, not to plan fuel stops.
             </p>
