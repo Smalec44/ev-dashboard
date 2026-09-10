@@ -1,6 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { connectorPrices } from "@/data/metrics";
 import { REGIONS, findRegion } from "@/data/regions";
 import {
@@ -373,6 +381,28 @@ export function Dashboard() {
       });
     }
   }
+
+  // The static build can be a day old, so the first search is refreshed live
+  // once per page load — but only once the national feed is in, since the
+  // fresh stations are merged into it and the feed would overwrite them.
+  // Later searches refresh on request only: each refresh is a round of
+  // Overpass queries on shared public servers.
+  const refreshedOnLoad = useRef(false);
+  const refreshOnLoad = useEffectEvent(() => {
+    if (refreshedOnLoad.current || !scope || live.state !== "idle") return;
+    refreshedOnLoad.current = true;
+    void refresh();
+  });
+  useEffect(() => {
+    if (feed !== "ready") return;
+    // Deferred to a callback: the refresh sets state straight away.
+    const id = setTimeout(() => {
+      refreshOnLoad();
+    }, 0);
+    return () => {
+      clearTimeout(id);
+    };
+  }, [feed, scope]);
 
   const ranked = useMemo(() => {
     if (mode === "trip") {
