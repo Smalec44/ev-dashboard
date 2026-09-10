@@ -31,6 +31,11 @@ export function Sparkline({ points }: { points: TrendPoint[] }) {
   });
 
   const settled = coords.filter(({ point }) => !point.partial);
+  const first = points[0];
+  const last = points[points.length - 1];
+  const lastSettled = settled[settled.length - 1];
+  // Guaranteed by the two length checks above; spelled out for the compiler.
+  if (!first || !last || !lastSettled) return null;
   const line = (list: typeof coords) =>
     list.map(({ x, y }) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
 
@@ -45,10 +50,10 @@ export function Sparkline({ points }: { points: TrendPoint[] }) {
         preserveAspectRatio="none"
         className="h-16 w-full"
         role="img"
-        aria-label={`Monthly BEV registrations, ${points[0].month} to ${points[points.length - 1].month}`}
+        aria-label={`Monthly BEV registrations, ${first.month} to ${last.month}`}
       >
         <polygon
-          points={`0,${HEIGHT} ${line(settled)} ${settled[settled.length - 1].x.toFixed(1)},${HEIGHT}`}
+          points={`0,${HEIGHT} ${line(settled)} ${lastSettled.x.toFixed(1)},${HEIGHT}`}
           className="fill-accent-soft"
         />
         <polyline

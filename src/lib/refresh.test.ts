@@ -3,6 +3,13 @@ import { test } from "node:test";
 import { applyRefresh, scopeFromParams, scopeToParams, type RefreshScope } from "./refresh.ts";
 import type { ChargingStation } from "./types.ts";
 
+/** Element at `index`, failing the test loudly rather than typing as undefined. */
+function at<T>(list: T[], index: number): T {
+  const item = list[index];
+  assert.ok(item !== undefined, `no element at ${index}`);
+  return item;
+}
+
 function station(id: string, lat: number, lon: number, extra: Partial<ChargingStation> = {}): ChargingStation {
   return {
     id,
@@ -59,11 +66,12 @@ test("when an OpenStreetMap pass failed, that facet is kept from before", () => 
     { refreshedAt: "t", stations: [fresh], foodAvailable: false, greenAvailable: true, parkingAvailable: false, errors: ["food: 504", "parking: 504"] },
     zurich,
   );
-  assert.equal(next[0].foodCount, 1);
-  assert.equal(next[0].food[0].name, "Café");
+  const merged = at(next, 0);
+  assert.equal(merged.foodCount, 1);
+  assert.equal(at(merged.food, 0).name, "Café");
   // Green did succeed, so its fresh (empty) answer stands.
-  assert.equal(next[0].greenScore, null);
-  assert.deepEqual(next[0].parking, { free: true });
+  assert.equal(merged.greenScore, null);
+  assert.deepEqual(merged.parking, { free: true });
 });
 
 test("scope parameters round-trip and reject nonsense", () => {

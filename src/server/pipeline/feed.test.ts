@@ -3,6 +3,13 @@ import { test } from "node:test";
 import { attachLiveStatus, buildSites, publishSite, type FeedRecord } from "./feed.ts";
 import { parseMaxStay } from "./overpass.ts";
 
+/** Element at `index`, failing the test loudly rather than typing as undefined. */
+function at<T>(list: T[], index: number): T {
+  const item = list[index];
+  assert.ok(item !== undefined, `no element at ${index}`);
+  return item;
+}
+
 function record(overrides: Partial<FeedRecord>): FeedRecord {
   return {
     EvseID: "CH*XXX*E1",
@@ -23,13 +30,13 @@ test("charge points sharing a station id become one site with that many stalls",
     record({ EvseID: "CH*XXX*E2", ChargingFacilities: [{ power: 150, powertype: "DC" }] }),
   ]);
   assert.equal(sites.length, 1);
-  assert.equal(sites[0].stalls, 2);
-  assert.equal(sites[0].connectorType, "DC");
-  assert.equal(sites[0].maxPowerKw, 150);
-  assert.deepEqual(sites[0].evseIds, ["CH*XXX*E1", "CH*XXX*E2"]);
+  assert.equal(at(sites, 0).stalls, 2);
+  assert.equal(at(sites, 0).connectorType, "DC");
+  assert.equal(at(sites, 0).maxPowerKw, 150);
+  assert.deepEqual(at(sites, 0).evseIds, ["CH*XXX*E1", "CH*XXX*E2"]);
   // The feed's spelling is canonicalised to the searchable region name.
-  assert.equal(sites[0].city, "Zürich");
-  assert.equal(sites[0].canton, "ZH");
+  assert.equal(at(sites, 0).city, "Zürich");
+  assert.equal(at(sites, 0).canton, "ZH");
 });
 
 test("same-named records a few metres apart are one site, further apart two", () => {
@@ -38,9 +45,9 @@ test("same-named records a few metres apart are one site, further apart two", ()
     record({ ChargingStationId: "CH*XXX*P8", EvseID: "E8", GeoCoordinates: { Google: "47.37700 8.54180" } }),
   ]);
   assert.equal(twins.length, 1);
-  assert.equal(twins[0].stalls, 2);
-  assert.equal(twins[0].id, "CH*XXX*P8");
-  assert.deepEqual(twins[0].evseIds.sort(), ["E8", "E9"]);
+  assert.equal(at(twins, 0).stalls, 2);
+  assert.equal(at(twins, 0).id, "CH*XXX*P8");
+  assert.deepEqual(at(twins, 0).evseIds.sort(), ["E8", "E9"]);
 
   const apart = buildSites([
     record({ ChargingStationId: "CH*XXX*P9", EvseID: "E9" }),
@@ -86,7 +93,7 @@ test("live status is folded into per-site counts, unknown included", () => {
     // E4 absent from the status feed entirely.
   ]);
   attachLiveStatus(sites, statuses, "2026-09-09T10:00:00Z");
-  assert.deepEqual(sites[0].live, {
+  assert.deepEqual(at(sites, 0).live, {
     available: 1,
     busy: 1,
     outOfService: 1,
@@ -96,8 +103,7 @@ test("live status is folded into per-site counts, unknown included", () => {
 });
 
 test("the published shape carries no charge point ids", () => {
-  const [site] = buildSites([record({})]);
-  const published = publishSite(site);
+  const published = publishSite(at(buildSites([record({})]), 0));
   assert.equal("evseIds" in published, false);
   assert.equal(published.id, "CH*XXX*P1");
 });

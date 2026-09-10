@@ -74,8 +74,10 @@ export function attachGreen(sites: Site[], areas: GreenArea[]): void {
       site.green = [];
       continue;
     }
+    const best = nearby[0];
+    if (best === undefined) continue;
     const variety = Math.min(nearby.length - 1, MAX_GREEN_VARIETY) * GREEN_VARIETY_BONUS;
-    site.greenScore = Math.round(Math.min(nearby[0].value + variety, 100));
+    site.greenScore = Math.round(Math.min(best.value + variety, 100));
     site.green = nearby.slice(0, MAX_GREEN_PER_STATION).map(({ area, distance }) => ({
       name: area.name,
       category: area.category,

@@ -1,12 +1,13 @@
 "use client";
 
 import "leaflet/dist/leaflet.css";
+import type * as LeafletModule from "leaflet";
 import type { LayerGroup, Map as LeafletMap } from "leaflet";
 import { useEffect, useRef, useState } from "react";
 import type { RankedStation } from "@/lib/ranking";
 import type { LatLon } from "@/lib/types";
 
-type Leaflet = typeof import("leaflet");
+type Leaflet = typeof LeafletModule;
 
 interface Engine {
   L: Leaflet;
@@ -54,7 +55,7 @@ export function ResultsMap({
   useEffect(() => {
     let cancelled = false;
     let instance: LeafletMap | null = null;
-    import("leaflet").then((L) => {
+    void import("leaflet").then((L) => {
       if (cancelled || !container.current) return;
       instance = L.map(container.current, {
         // The page scrolls past the map; hijacking the wheel would trap it.

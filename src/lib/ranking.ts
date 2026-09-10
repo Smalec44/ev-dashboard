@@ -118,7 +118,7 @@ export function foodScore(food: FoodSpot[]): number {
   const scored = food.map(spotScore).sort((a, b) => b - a);
   const variety =
     Math.min(scored.length - 1, MAX_VARIETY_SPOTS) * VARIETY_BONUS_PER_SPOT;
-  return Math.round(Math.min(scored[0] + variety, 100));
+  return Math.round(Math.min((scored[0] ?? 0) + variety, 100));
 }
 
 export function bestFoodSpot(food: FoodSpot[]): FoodSpot | null {
@@ -253,7 +253,8 @@ export function rankStations(
     const breakdown: Partial<Record<Criterion, number>> = {};
     for (const criterion of options.criteria) {
       const column = columns[criterion];
-      if (column) breakdown[criterion] = column[index];
+      const value = column?.[index];
+      if (value !== undefined) breakdown[criterion] = value;
     }
 
     const parts = Object.values(breakdown);

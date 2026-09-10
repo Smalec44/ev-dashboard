@@ -71,10 +71,10 @@ type LiveRefresh =
 
 /** "food and green", from the "facet: reason" lines a refresh reports. */
 function liveGaps(errors: string[]): string {
-  const facets = errors.map((error) => error.split(":")[0]);
+  const facets = errors.map((error) => error.split(":")[0] ?? error);
   return facets.length > 1
-    ? `${facets.slice(0, -1).join(", ")} and ${facets.at(-1)}`
-    : facets[0];
+    ? `${facets.slice(0, -1).join(", ")} and ${facets.at(-1) ?? ""}`
+    : (facets[0] ?? "");
 }
 
 /** Only ever rendered after the fetch resolves, so it never runs on the server. */
@@ -569,7 +569,7 @@ export function Dashboard() {
         </span>
         <button
           type="button"
-          onClick={refresh}
+          onClick={() => void refresh()}
           disabled={live.state === "busy" || !scope}
           title={
             scope
@@ -618,8 +618,8 @@ export function Dashboard() {
                   </>
                 ) : (
                   <>
-                    {region!.city}{" "}
-                    <span className="text-muted">({region!.canton})</span>
+                    {region?.city}{" "}
+                    <span className="text-muted">({region?.canton})</span>
                   </>
                 )}
               </h2>
@@ -647,7 +647,11 @@ export function Dashboard() {
             </div>
           </div>
 
-          <ResultsMap route={mapRoute} area={mapArea} stops={visible} />
+          <ResultsMap
+            {...(mapRoute && { route: mapRoute })}
+            {...(mapArea && { area: mapArea })}
+            stops={visible}
+          />
 
           {criteria.length === 0 && (
             <div className="rounded-xl border border-border bg-surface p-5 text-sm text-muted">

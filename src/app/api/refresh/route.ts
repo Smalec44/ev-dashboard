@@ -94,7 +94,7 @@ export async function GET(request: NextRequest) {
     parallel: true,
     parkingScope: "cells",
     overpass: {
-      endpoints: OVERPASS_ENDPOINTS,
+      ...(OVERPASS_ENDPOINTS && { endpoints: OVERPASS_ENDPOINTS }),
       // A request cannot wait out a rate limit the way the offline build can.
       rounds: 2,
       backoffMs: 3_000,

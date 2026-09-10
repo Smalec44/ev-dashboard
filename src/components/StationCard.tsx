@@ -140,14 +140,14 @@ export function StationCard({
   ranked: RankedStation;
   rank: number;
   threshold: number;
-  detourKm?: number;
-  routeProgress?: number;
+  detourKm?: number | undefined;
+  routeProgress?: number | undefined;
   /** Km from the searched town centre, in region mode. */
-  distanceKm?: number;
+  distanceKm?: number | undefined;
   /** The town that was searched, so results from a neighbour can say so. */
-  searchedCity?: string;
+  searchedCity?: string | undefined;
   /** The trip's endpoints, in trip mode: enables the "route via here" link. */
-  route?: { from: Region; to: Region };
+  route?: { from: Region; to: Region } | undefined;
   /** Client clock for "open now", null until mount (see Dashboard). */
   now: Date | null;
 }) {

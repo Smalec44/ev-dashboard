@@ -7,8 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "analyze": "knip",
     "typecheck": "next typegen && tsc --noEmit",
-    "check": "npm run typecheck && npm run lint && npm test",
+    "check": "npm run typecheck && npm run lint && npm run analyze && npm test",
     "test": "TZ=Europe/Zurich node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./scripts/resolve-alias.mjs --test",
     "build:data": "node --import ./scripts/resolve-alias.mjs scripts/build-data.mjs",
     "db:up": "docker compose up -d db",
@@ -31,7 +32,9 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.3.4",
+    "knip": "^6.35.1",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "typescript-eslint": "^8.70.0"
   }
 }

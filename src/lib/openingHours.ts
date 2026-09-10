@@ -116,8 +116,11 @@ const UNSUPPORTED_RE =
 function expandDays(list: string): Day[] {
   const days = new Set<Day>();
   for (const part of list.split(",")) {
-    const [from, to] = part.trim().split("-");
+    const [from = "", to] = part.trim().split("-");
     const fromDay = DAY_CODES[from];
+    // The clause regexes only admit known codes, so this never fires; the
+    // lookup is still typed as possibly missing and the compiler is right.
+    if (fromDay === undefined) continue;
     if (to === undefined) {
       days.add(fromDay);
       continue;
@@ -125,7 +128,8 @@ function expandDays(list: string): Day[] {
     // Walk forward with wraparound so "Fr-Mo" (spanning the week boundary)
     // resolves the same way OSM's range semantics do.
     const toDay = DAY_CODES[to];
-    let cursor = fromDay;
+    if (toDay === undefined) continue;
+    let cursor: Day = fromDay;
     days.add(cursor);
     while (cursor !== toDay) {
       cursor = (cursor + 1) % 7;
@@ -176,20 +180,20 @@ function parseClause(clause: string): ClauseResult | null {
 
   const offMatch = OFF_CLAUSE_RE.exec(clause);
   if (offMatch) {
-    return { days: expandDays(offMatch[1]), clears: true, own: [], spill: [] };
+    return { days: expandDays(offMatch[1] ?? ""), clears: true, own: [], spill: [] };
   }
 
   const match = CLAUSE_RE.exec(clause);
   if (!match) return null;
 
-  const [, dayList, timeList] = match;
+  const [, dayList, timeList = ""] = match;
   const days = dayList ? expandDays(dayList) : ALL_DAYS;
 
   const own: DayInterval[] = [];
   const spill: DayInterval[] = [];
   for (const day of days) {
     for (const timeRange of timeList.split(",")) {
-      const [startStr, endStr] = timeRange.trim().split("-");
+      const [startStr = "", endStr = ""] = timeRange.trim().split("-");
       const start = toMinutes(startStr);
       const end = toMinutes(endStr);
       if (end > start) {
@@ -235,8 +239,8 @@ export function openState(spec: string | undefined, now: Date): OpenState {
     if (parsed.clears) {
       for (const day of parsed.days) dayIntervals.set(day, []);
     }
-    for (const interval of parsed.own) dayIntervals.get(interval.day)!.push(interval);
-    for (const interval of parsed.spill) dayIntervals.get(interval.day)!.push(interval);
+    for (const interval of parsed.own) dayIntervals.get(interval.day)?.push(interval);
+    for (const interval of parsed.spill) dayIntervals.get(interval.day)?.push(interval);
   }
 
   const at = venueTime(now);

@@ -7,7 +7,7 @@ import type { Attribution } from "./sources";
  * BFE data is O-By-Ask: commercial use requires written permission from
  * geoinformation@bfe.admin.ch. That is a human step — flag it, do not assume it.
  */
-export const ATTRIBUTIONS: Record<string, Attribution> = {
+export const ATTRIBUTIONS = {
   bfe: {
     source: "bfe",
     text: "Charging infrastructure: Swiss Federal Office of Energy (BFE) / ich-tanke-strom",
@@ -43,7 +43,7 @@ export const ATTRIBUTIONS: Record<string, Attribution> = {
     licence: "Commercial — requires contract",
     commercialUseRestricted: true,
   },
-};
+} satisfies Record<string, Attribution>;
 
 /**
  * The three sources every render depends on: the federal feed for stations,
@@ -52,7 +52,7 @@ export const ATTRIBUTIONS: Record<string, Attribution> = {
  * naming a source the page does not draw on is its own kind of wrong, and
  * ElCom and Chargeprice are still only schema, so they stay behind a flag.
  */
-const ALWAYS_ACTIVE = [
+const ALWAYS_ACTIVE: Attribution[] = [
   ATTRIBUTIONS.bfe,
   ATTRIBUTIONS.osm,
   ATTRIBUTIONS.geonames,

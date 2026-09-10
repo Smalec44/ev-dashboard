@@ -6,7 +6,7 @@
 import { gunzipSync } from "node:zlib";
 import { REGIONS } from "../../data/regions.ts";
 import { haversineMetres } from "./geo.ts";
-import type { ChargingStation, ConnectorType, LatLon, LiveStatus } from "../../lib/types.ts";
+import type { ChargingStation, ConnectorType, LatLon, LiveStatus, Region } from "../../lib/types.ts";
 
 export const EVSE_URL =
   "https://data.geo.admin.ch/ch.bfe.ladestellen-elektromobilitaet/data/oicp/ch.bfe.ladestellen-elektromobilitaet.json";
@@ -34,7 +34,7 @@ export interface FeedRecord {
   ChargingStationNames?: LocalisedName[] | LocalisedName;
   ChargingFacilities?: { power?: number | string; powertype?: string }[];
   /** Added while flattening: the OperatorName of the enclosing block. */
-  operator?: string;
+  operator?: string | undefined;
 }
 
 interface FeedJson {
@@ -46,14 +46,14 @@ interface StatusJson {
 }
 
 /** Both files are served gzipped despite the .json extension — sometimes. */
-export function decodeJson<T>(buffer: Uint8Array): T {
+export function decodeJson(buffer: Uint8Array): unknown {
   const bytes =
     buffer[0] === 0x1f && buffer[1] === 0x8b ? gunzipSync(buffer) : buffer;
-  return JSON.parse(new TextDecoder().decode(bytes)) as T;
+  return JSON.parse(new TextDecoder().decode(bytes));
 }
 
 export function parseFeed(buffer: Uint8Array): FeedRecord[] {
-  const json = decodeJson<FeedJson>(buffer);
+  const json = decodeJson(buffer) as FeedJson;
   return json.EVSEData.flatMap((block) =>
     (block.EVSEDataRecord ?? []).map((r) => ({
       ...r,
@@ -64,7 +64,7 @@ export function parseFeed(buffer: Uint8Array): FeedRecord[] {
 
 /** Live status per charge point id. */
 export function parseStatus(buffer: Uint8Array): Map<string, string> {
-  const json = decodeJson<StatusJson>(buffer);
+  const json = decodeJson(buffer) as StatusJson;
   const statuses = new Map<string, string>();
   for (const block of json.EVSEStatuses) {
     for (const record of block.EVSEStatusRecord ?? []) {
@@ -116,8 +116,8 @@ function distanceKmApprox(a: LatLon, b: LatLon): number {
  * cross-border neighbours (Basel/Birsfelden) or cases where the name lookup
  * itself picked the wrong twin (Muri BE vs AG) and the coordinates are righter.
  */
-function nearestRegion(point: LatLon) {
-  let best = REGIONS[0];
+function nearestRegion(point: LatLon): Region {
+  let best: Region | undefined;
   let bestKm = Infinity;
   for (const region of REGIONS) {
     const km = distanceKmApprox(point, region);
@@ -126,6 +126,7 @@ function nearestRegion(point: LatLon) {
       best = region;
     }
   }
+  if (!best) throw new Error("REGIONS is empty");
   return best;
 }
 
@@ -165,6 +166,7 @@ function parseCoords(record: FeedRecord): LatLon | null {
   const raw = record.GeoCoordinates?.Google;
   if (!raw) return null;
   const [lat, lon] = raw.trim().split(/\s+/).map(Number);
+  if (lat === undefined || lon === undefined) return null;
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
   if (
     lat < CH_BOUNDS.minLat || lat > CH_BOUNDS.maxLat ||
@@ -183,8 +185,12 @@ function stationName(record: FeedRecord): string {
     names.find((n) => n.lang === "de") ??
     names.find((n) => n.lang === "en") ??
     names[0];
+  // Empty strings count as missing here, which is why this is not `??`.
   const value = preferred?.value?.trim();
-  return value || record.Address?.Street?.trim() || "Charging station";
+  if (value) return value;
+  const street = record.Address?.Street?.trim();
+  if (street) return street;
+  return "Charging station";
 }
 
 interface Accumulator {
@@ -227,11 +233,19 @@ export function buildSites(records: FeedRecord[]): Site[] {
     // ("/ West") where the city should be; anything not starting with a letter
     // is not a place name, so let the coordinates answer instead.
     const named = rawCity && /^\p{L}/u.test(rawCity) ? rawCity : null;
-    const fallback = match ? null : nearestRegion(coords);
-    const city = match?.city ?? named ?? fallback!.city;
-    const canton = match?.canton ?? fallback!.canton;
+    let city: string;
+    let canton: string;
+    if (match) {
+      city = match.city;
+      canton = match.canton;
+    } else {
+      const nearest = nearestRegion(coords);
+      city = named ?? nearest.city;
+      canton = nearest.canton;
+    }
 
-    const key = record.ChargingStationId || record.EvseID;
+    const stationId = record.ChargingStationId?.trim();
+    const key = stationId !== undefined && stationId !== "" ? stationId : record.EvseID;
     const facilities = record.ChargingFacilities ?? [];
     const power = Math.max(
       0,
@@ -387,6 +401,5 @@ export function attachLiveStatus(
 /** The published shape: coordinates last for readability, internals gone. */
 export function publishSite(site: Site): ChargingStation {
   const { evseIds: _evseIds, lat, lon, ...rest } = site;
-  void _evseIds;
   return { ...rest, lat, lon };
 }

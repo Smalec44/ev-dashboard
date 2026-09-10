@@ -117,11 +117,14 @@ export function applyRefresh(
     const merged: ChargingStation = { ...station };
     if (!response.foodAvailable) {
       merged.food = old.food;
-      merged.foodCount = old.foodCount;
+      if (old.foodCount !== undefined) merged.foodCount = old.foodCount;
+      else delete merged.foodCount;
     }
     if (!response.greenAvailable) {
-      merged.green = old.green;
-      merged.greenScore = old.greenScore;
+      if (old.green !== undefined) merged.green = old.green;
+      else delete merged.green;
+      if (old.greenScore !== undefined) merged.greenScore = old.greenScore;
+      else delete merged.greenScore;
     }
     if (!response.parkingAvailable) {
       if (old.parking) merged.parking = old.parking;

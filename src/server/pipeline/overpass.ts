@@ -133,12 +133,14 @@ async function mapLimit<T, R>(
   limit: number,
   worker: (item: T, index: number) => Promise<R>,
 ): Promise<R[]> {
-  const results: R[] = new Array(items.length);
+  const results: R[] = [];
   let next = 0;
   const lanes = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
     while (next < items.length) {
       const index = next++;
-      results[index] = await worker(items[index], index);
+      const item = items[index];
+      if (item === undefined) break;
+      results[index] = await worker(item, index);
     }
   });
   await Promise.all(lanes);
@@ -217,14 +219,16 @@ export function parseFood(json: OverpassJson): FoodPoi[] {
   const spots: FoodPoi[] = [];
   for (const el of json.elements) {
     const tags = el.tags;
-    if (!tags?.name || !Number.isFinite(el.lat) || !Number.isFinite(el.lon)) continue;
+    const category = tags?.amenity ?? tags?.shop;
+    if (!tags?.name || !category) continue;
+    if (el.lat === undefined || el.lon === undefined) continue;
     const spot: FoodPoi = {
       id: el.id,
       name: tags.name,
-      category: tags.amenity ?? tags.shop,
+      category,
       cuisine: tags.cuisine?.split(";")[0] ?? null,
-      lat: el.lat!,
-      lon: el.lon!,
+      lat: el.lat,
+      lon: el.lon,
     };
     if (tags.opening_hours) spot.openingHours = tags.opening_hours;
     const outdoorSeating = toBool(tags.outdoor_seating);
@@ -319,10 +323,18 @@ export function parseGreen(json: OverpassJson): GreenArea[] {
     // Guards against corrupt geometry seen in the live data (a forest way
     // reporting minlat -91), which would otherwise sit 0 m from everything.
     if (b.minlat < 45 || b.maxlat > 48.5 || b.minlon < 5 || b.maxlon > 11) continue;
-    const key = ["leisure", "landuse", "natural"]
-      .map((k) => (tags[k] ? `${k}=${tags[k]}` : null))
-      .find((k) => k && GREEN_WEIGHTS[k] !== undefined);
-    if (!key) continue;
+    let category: string | undefined;
+    let weight: number | undefined;
+    for (const k of ["leisure", "landuse", "natural"]) {
+      const value = tags[k];
+      const w = value === undefined ? undefined : GREEN_WEIGHTS[`${k}=${value}`];
+      if (value !== undefined && w !== undefined) {
+        category = value;
+        weight = w;
+        break;
+      }
+    }
+    if (category === undefined || weight === undefined) continue;
     const diagonalKm = Math.hypot(
       (b.maxlat - b.minlat) * 111,
       (b.maxlon - b.minlon) * 75,
@@ -331,8 +343,8 @@ export function parseGreen(json: OverpassJson): GreenArea[] {
     areas.push({
       id: el.id,
       name: tags.name ?? null,
-      category: key.split("=")[1],
-      weight: GREEN_WEIGHTS[key],
+      category,
+      weight,
       bounds: b,
     });
   }
@@ -391,10 +403,11 @@ export function parseMaxStay(value: string | undefined): number | null | undefin
   if (!value) return undefined;
   const text = value.trim().toLowerCase();
   if (text === "unlimited" || text === "no") return null;
-  const m = text.match(/^(\d+(?:\.\d+)?)\s*(h|hours?|hrs?|std|min|minutes?|mins?)$/);
+  const m = /^(\d+(?:\.\d+)?)\s*(h|hours?|hrs?|std|min|minutes?|mins?)$/.exec(text);
   if (!m) return undefined;
-  const n = Number(m[1]);
-  return Math.round(/^(h|std)/.test(m[2]) ? n * 60 : n);
+  const [, amount = "", unit = ""] = m;
+  const n = Number(amount);
+  return Math.round(/^(h|std)/.test(unit) ? n * 60 : n);
 }
 
 export function parseParking(json: OverpassJson): ParkingPoint[] {
@@ -402,14 +415,14 @@ export function parseParking(json: OverpassJson): ParkingPoint[] {
   for (const el of json.elements) {
     const tags = el.tags ?? {};
     const point = el.center ?? el;
-    if (!Number.isFinite(point.lat) || !Number.isFinite(point.lon)) continue;
+    if (point.lat === undefined || point.lon === undefined) continue;
     const fee = toBool(tags["parking:fee"]);
     const maxStayMinutes = parseMaxStay(tags.maxstay);
     const parking: ParkingTerms = {};
     if (fee !== undefined) parking.free = !fee;
     if (maxStayMinutes !== undefined) parking.maxStayMinutes = maxStayMinutes;
     if (Object.keys(parking).length === 0) continue;
-    points.push({ id: el.id, lat: point.lat!, lon: point.lon!, parking });
+    points.push({ id: el.id, lat: point.lat, lon: point.lon, parking });
   }
   return points;
 }

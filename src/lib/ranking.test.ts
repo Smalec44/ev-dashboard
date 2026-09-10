@@ -32,7 +32,7 @@ const slow = station("slow", { maxPowerKw: 11, pricePerKwh: 0.38 });
 const scoreOf = (id: string, pool: ChargingStation[]) =>
   rankStations(pool, { criteria: ["speed", "price"], foodThreshold: 0 }).find(
     (r) => r.station.id === id,
-  )!.score;
+  )?.score;
 
 test("a station's score does not depend on which other stations are listed", () => {
   // The regression this guards: scores were normalised over the visible pool,
@@ -55,13 +55,14 @@ test("speed is scored on a log scale, capped at 350 kW", () => {
   assert.equal(top, 100);
   assert.equal(fast, 100);
   assert.equal(dead, 0);
+  assert.ok(wall !== undefined && mid !== undefined);
   assert.ok(wall > 0 && wall < mid && mid < fast);
   // Doubling the power is worth the same step wherever it happens.
   const step = (kw: number) =>
     rankStations([station("x", { maxPowerKw: kw })], {
       criteria: ["speed"],
       foodThreshold: 0,
-    })[0].score;
+    })[0]?.score ?? -1;
   assert.ok(Math.abs(step(22) - step(11) - (step(88) - step(44))) <= 1);
 });
 
@@ -93,7 +94,7 @@ test("the stop point slider moves which station counts as 'in the middle'", () =
       foodThreshold: 0,
       routeProgress: progress,
       stopAt,
-    }).find((r) => r.station.id === id)!.breakdown.middle;
+    }).find((r) => r.station.id === id)?.breakdown.middle;
 
   assert.equal(middleScore(0.25, "early"), 100);
   assert.equal(middleScore(0.25, "late"), 0);
@@ -115,7 +116,7 @@ test("live status replaces the stall count in the availability score", () => {
   const availability = (id: string) =>
     rankStations([eight, full, half], { criteria: ["availability"], foodThreshold: 0 }).find(
       (r) => r.station.id === id,
-    )!.breakdown.availability;
+    )?.breakdown.availability;
   assert.equal(availability("eight"), 100);
   assert.equal(availability("full"), 0);
   // Unknown counts as free: 8 − 4 busy − 0 down = 4 of the 8 that mean "plenty".
