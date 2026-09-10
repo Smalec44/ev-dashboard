@@ -5,7 +5,7 @@ import type * as LeafletModule from "leaflet";
 import type { LayerGroup, Map as LeafletMap } from "leaflet";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { RankedStation } from "@/lib/ranking";
-import { indexRoute, pointAlong } from "@/lib/route";
+import { indexRoute, lineUpTo, pointAlong } from "@/lib/route";
 import type { LatLon } from "@/lib/types";
 
 type Leaflet = typeof LeafletModule;
@@ -27,6 +27,11 @@ export interface MapRoute {
   stopAt: number;
   /** The road between the two, when the router answered. */
   road?: LatLon[];
+  /**
+   * 0–1 of the way the car gets on its current charge, when known: that
+   * stretch is drawn blue. 1 or more reaches the destination.
+   */
+  reach?: number;
 }
 
 export interface MapArea {
@@ -39,6 +44,9 @@ const HIGHLIGHTED_STOPS = 3;
 
 /** Route, endpoints and the selected stop: dark, because the tiles are always light. */
 const MAP_INK = "#12161c";
+
+/** The stretch the charge covers: blue reads against the dark route and green stops. */
+export const REACH_BLUE = "#2563eb";
 
 /**
  * The results on a map: the road (or, without one, the direct line) with its
@@ -147,7 +155,10 @@ export function ResultsMap({
     if (route) {
       const a: [number, number] = [route.from.lat, route.from.lon];
       const b: [number, number] = [route.to.lat, route.to.lon];
+      // Clamped: a charge that outlasts the trip covers all of it, no more.
+      const reach = route.reach === undefined ? null : Math.min(Math.max(route.reach, 0), 1);
       let breakPoint: [number, number];
+      let reachLine: [number, number][] | null = null;
       if (roadIndex) {
         // The stops and the break are measured along the road, so a dashed
         // straight line would only suggest a shortcut that does not exist.
@@ -157,6 +168,9 @@ export function ResultsMap({
         ).addTo(layer);
         const at = pointAlong(roadIndex, route.stopAt);
         breakPoint = [at.lat, at.lon];
+        if (reach !== null) {
+          reachLine = lineUpTo(roadIndex, reach).map((p): [number, number] => [p.lat, p.lon]);
+        }
       } else {
         // No road: the detours and the break are measured from this line.
         L.polyline([a, b], {
@@ -166,10 +180,34 @@ export function ResultsMap({
           opacity: 0.8,
           className: "direct-line",
         }).addTo(layer);
-        breakPoint = [
-          a[0] + (b[0] - a[0]) * route.stopAt,
-          a[1] + (b[1] - a[1]) * route.stopAt,
+        const along = (t: number): [number, number] => [
+          a[0] + (b[0] - a[0]) * t,
+          a[1] + (b[1] - a[1]) * t,
         ];
+        breakPoint = along(route.stopAt);
+        if (reach !== null) reachLine = [a, along(reach)];
+      }
+      if (reachLine) {
+        // Over the route, under the break marker and the stops.
+        L.polyline(reachLine, {
+          color: REACH_BLUE,
+          weight: 5,
+          opacity: 0.9,
+          className: "reach-route",
+        }).addTo(layer);
+        const end = reachLine.at(-1);
+        if (end && reach !== null && reach < 1) {
+          L.circleMarker(end, {
+            radius: 6,
+            color: "#fff",
+            weight: 2,
+            fillColor: REACH_BLUE,
+            fillOpacity: 1,
+            className: "reach-end",
+          })
+            .bindTooltip("Charge runs out about here", { direction: "top", offset: [0, -6] })
+            .addTo(layer);
+        }
       }
       L.circleMarker(breakPoint, {
         radius: 9,
@@ -231,7 +269,7 @@ export function ResultsMap({
       role="img"
       aria-label={
         route
-          ? `Map of the ${route.road ? "road " : ""}route from ${route.from.city} to ${route.to.city} with the ranked charging stops`
+          ? `Map of the ${route.road ? "road " : ""}route from ${route.from.city} to ${route.to.city} with the ranked charging stops${route.reach !== undefined ? " and your battery range in blue" : ""}`
           : area
             ? `Map of charging stations around ${area.centre.city}`
             : "Map of charging stations"

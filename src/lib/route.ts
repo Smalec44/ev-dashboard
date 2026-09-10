@@ -147,11 +147,13 @@ export function projectOntoRoute(
   return { alongKm: bestAlong, offKm: Math.sqrt(bestSq) };
 }
 
-/** The point `fraction` (0–1) of the way along the road, by road km. */
-export function pointAlong(index: RouteIndex, fraction: number): LatLon {
+/**
+ * Where `fraction` (0–1) of the way along the road falls, by road km: the
+ * exact point, and the first vertex at or past it.
+ */
+function locate(index: RouteIndex, fraction: number): { vertex: number; point: LatLon } {
   const { line, cumKm } = index;
   const target = Math.min(Math.max(fraction, 0), 1) * index.totalKm;
-  // The first vertex at or past the target.
   let low = 0;
   let high = cumKm.length - 1;
   while (low < high) {
@@ -162,9 +164,23 @@ export function pointAlong(index: RouteIndex, fraction: number): LatLon {
   const end = line[low];
   if (!end) throw new Error("pointAlong on an empty route");
   const start = line[low - 1];
-  if (!start) return end;
+  if (!start) return { vertex: low, point: end };
   const startKm = cumKm[low - 1] ?? 0;
   const endKm = cumKm[low] ?? startKm;
   const t = endKm > startKm ? (target - startKm) / (endKm - startKm) : 0;
-  return { lat: start.lat + (end.lat - start.lat) * t, lon: start.lon + (end.lon - start.lon) * t };
+  return {
+    vertex: low,
+    point: { lat: start.lat + (end.lat - start.lat) * t, lon: start.lon + (end.lon - start.lon) * t },
+  };
+}
+
+/** The point `fraction` (0–1) of the way along the road, by road km. */
+export function pointAlong(index: RouteIndex, fraction: number): LatLon {
+  return locate(index, fraction).point;
+}
+
+/** The road from its start to `fraction` (0–1) of the way, by road km. */
+export function lineUpTo(index: RouteIndex, fraction: number): LatLon[] {
+  const { vertex, point } = locate(index, fraction);
+  return [...index.line.slice(0, vertex), point];
 }

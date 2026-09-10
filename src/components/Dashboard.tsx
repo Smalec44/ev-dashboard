@@ -20,6 +20,7 @@ import {
 import { routeViaStationUrl, stationMapUrl } from "@/lib/maps";
 import { indexRoute, routeQuery, type RouteIndex } from "@/lib/route";
 import { measureStations, mergeDetours, selectStops, type TripBasis } from "@/lib/trip";
+import { REAL_WORLD_SHARE, rangeKm } from "@/lib/range";
 import type { ChargingStation } from "@/lib/types";
 import {
   DEFAULT_CRITERIA,
@@ -39,7 +40,7 @@ const MODE_ONLY = new Set<Criterion>(
 );
 import { RankingControls, type ConnectorFilter } from "./RankingControls";
 import { RegionCombobox } from "./RegionCombobox";
-import { ResultsMap, type MapArea, type MapRoute } from "./ResultsMap";
+import { REACH_BLUE, ResultsMap, type MapArea, type MapRoute } from "./ResultsMap";
 import { StationCard, cardElementId } from "./StationCard";
 import { useRoadDetours, type DetourStop } from "./useRoadDetours";
 import { useRoadRoute } from "./useRoadRoute";
@@ -92,6 +93,10 @@ const NO_STOPS: DetourStop[] = [];
 const STOP_AT_MIN = ENDPOINT_MARGIN;
 const STOP_AT_MAX = 1 - ENDPOINT_MARGIN;
 const DEFAULT_STOP_AT = 0.5;
+
+/** A typical mid-size EV, until the driver enters their own. */
+const DEFAULT_WLTP_KM = 400;
+const DEFAULT_BATTERY_PCT = 80;
 
 type LiveRefresh =
   | { state: "idle" }
@@ -188,6 +193,9 @@ export function Dashboard() {
   const [connector, setConnector] = useState<ConnectorFilter>("ALL");
   const [maxDetour, setMaxDetour] = useState(MAX_DETOUR_KM);
   const [stopAt, setStopAt] = useState(DEFAULT_STOP_AT);
+  // Kept as typed: a cleared field has to stay empty while the driver retypes.
+  const [wltpText, setWltpText] = useState(String(DEFAULT_WLTP_KM));
+  const [battery, setBattery] = useState(DEFAULT_BATTERY_PCT);
   // The station the map or a card was last clicked on; the top match until then.
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // The page is remembered together with the search it belongs to, so a new
@@ -472,12 +480,24 @@ export function Dashboard() {
   // Stable, so the map does not redraw its dots on every clock tick.
   const selectFromMap = useCallback((id: string) => select(id, true), [select]);
 
+  const wltpKm = Number(wltpText);
+  const wltpValid = wltpText.trim() !== "" && Number.isFinite(wltpKm) && wltpKm > 0;
+  // No usable WLTP figure, no blue stretch: a 0 km range would be a guess.
+  const reachKm = wltpValid ? rangeKm(wltpKm, battery) : null;
+  const breakKm = trip && !trip.shortTrip ? stopAt * trip.routeKm : null;
+
   const mapRoute = useMemo<MapRoute | undefined>(
     () =>
       trip
-        ? { from: trip.from, to: trip.to, stopAt, ...(road && { road: road.line }) }
+        ? {
+            from: trip.from,
+            to: trip.to,
+            stopAt,
+            ...(road && { road: road.line }),
+            ...(reachKm !== null && trip.routeKm > 0 ? { reach: reachKm / trip.routeKm } : {}),
+          }
         : undefined,
-    [trip, stopAt, road],
+    [trip, stopAt, road, reachKm],
   );
   const mapArea = useMemo<MapArea | undefined>(
     () =>
@@ -599,6 +619,79 @@ export function Dashboard() {
           </div>
         )}
 
+        {mode === "trip" && (
+          <div className="mt-5 grid gap-4 sm:grid-cols-2">
+            <div>
+              <label
+                htmlFor="wltp"
+                className="text-xs font-medium uppercase tracking-wide text-muted"
+              >
+                Car’s WLTP range
+              </label>
+              <div className="mt-2 flex items-center gap-2">
+                <input
+                  id="wltp"
+                  type="number"
+                  inputMode="numeric"
+                  min={50}
+                  max={1000}
+                  step={10}
+                  value={wltpText}
+                  onChange={(event) => setWltpText(event.target.value)}
+                  aria-invalid={!wltpValid}
+                  aria-describedby="range-note"
+                  className={`w-28 rounded-lg border bg-background px-3 py-1.5 text-base tabular-nums outline-none focus:border-accent ${
+                    wltpValid ? "border-border" : "border-warn"
+                  }`}
+                />
+                <span className="text-sm text-muted">km</span>
+              </div>
+            </div>
+            <div>
+              <div className="flex items-center justify-between gap-3">
+                <label
+                  htmlFor="battery"
+                  className="text-xs font-medium uppercase tracking-wide text-muted"
+                >
+                  Battery now
+                </label>
+                <span className="text-sm font-medium tabular-nums">{battery}%</span>
+              </div>
+              <input
+                id="battery"
+                type="range"
+                min={0}
+                max={100}
+                step={5}
+                value={battery}
+                onChange={(event) => setBattery(Number(event.target.value))}
+                aria-valuetext={`${battery}% charged`}
+                aria-describedby="range-note"
+                className="mt-2 w-full accent-accent"
+              />
+            </div>
+            <p id="range-note" className="text-xs text-muted sm:col-span-2">
+              {reachKm === null ? (
+                "Enter the WLTP range from the car’s spec sheet to see how far this charge gets you."
+              ) : (
+                <>
+                  <span
+                    aria-hidden="true"
+                    className="mr-1.5 inline-block h-1 w-4 rounded-full align-middle"
+                    style={{ backgroundColor: REACH_BLUE }}
+                  />
+                  ≈ {Math.round(reachKm)} km on this charge — blue on the map. That is{" "}
+                  {Math.round(REAL_WORLD_SHARE * 100)}% of WLTP, for motorway speeds.
+                  {trip &&
+                    (reachKm >= trip.routeKm
+                      ? ` Enough to reach ${trip.to.city} without charging.`
+                      : ` ${Math.round(trip.routeKm - reachKm)} km short of ${trip.to.city}.`)}
+                </>
+              )}
+            </p>
+          </div>
+        )}
+
         {mode === "trip" && trip?.shortTrip && (
           <p className="mt-5 text-xs text-muted">
             Short trip — every station along the way is listed; the break
@@ -642,6 +735,12 @@ export function Dashboard() {
               {STOP_WINDOW_KM} km of this point are listed; “Near the stop
               point” ranks the closest first.
             </p>
+            {reachKm !== null && breakKm !== null && breakKm > reachKm && (
+              <p className="mt-1 text-xs text-warn">
+                This break is past your range — move it before ≈{" "}
+                {Math.round(reachKm)} km after {trip?.from.city}.
+              </p>
+            )}
           </div>
         )}
 

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { distanceKm } from "./geo.ts";
-import { indexRoute, parseRouteQuery, pointAlong, projectOntoRoute, routeQuery } from "./route.ts";
+import { indexRoute, lineUpTo, parseRouteQuery, pointAlong, projectOntoRoute, routeQuery } from "./route.ts";
 import type { LatLon } from "./types.ts";
 
 const zurich = { lat: 47.3769, lon: 8.5417 };
@@ -75,6 +75,14 @@ test("halfway along is half the road's km, wherever the corner falls", () => {
   near(projectOntoRoute(index, half).alongKm, LENGTH / 2, 0.01, "halfway projected back");
   assert.deepEqual(pointAlong(index, -1), START);
   assert.deepEqual(pointAlong(index, 2), END);
+});
+
+test("the road up to a fraction keeps its corners and ends where pointAlong does", () => {
+  const index = indexRoute({ distanceKm: LENGTH, line: LINE });
+  // Halfway is past the corner, so the corner stays and the cut is interpolated.
+  assert.deepEqual(lineUpTo(index, 0.5), [START, CORNER, pointAlong(index, 0.5)]);
+  assert.deepEqual(lineUpTo(index, 1), LINE);
+  assert.deepEqual(lineUpTo(index, 0), [START]);
 });
 
 test("the km along the line are stretched to the router's distance, exactly", () => {
