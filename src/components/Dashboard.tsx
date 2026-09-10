@@ -29,6 +29,7 @@ const MODE_ONLY = new Set<Criterion>(
 );
 import { RankingControls, type ConnectorFilter } from "./RankingControls";
 import { RegionCombobox } from "./RegionCombobox";
+import { ResultsMap, type MapArea, type MapRoute } from "./ResultsMap";
 import { StationCard } from "./StationCard";
 import {
   applyRefresh,
@@ -303,7 +304,18 @@ export function Dashboard() {
     [ranked],
   );
   const flaggedCount = ranked.filter((r) => r.belowFoodThreshold).length;
-  const visible = ranked.slice(0, RESULT_LIMIT);
+  // Memoised: the map redraws its dots whenever this changes identity.
+  const visible = useMemo(() => ranked.slice(0, RESULT_LIMIT), [ranked]);
+
+  const mapRoute = useMemo<MapRoute | undefined>(
+    () => (trip ? { from: trip.from, to: trip.to, stopAt } : undefined),
+    [trip, stopAt],
+  );
+  const mapArea = useMemo<MapArea | undefined>(
+    () =>
+      mode === "region" && region ? { centre: region, radiusKm: radius } : undefined,
+    [mode, region, radius],
+  );
 
   function changeMode(next: Mode) {
     setMode(next);
@@ -598,6 +610,8 @@ export function Dashboard() {
               </div>
             </div>
           </div>
+
+          <ResultsMap route={mapRoute} area={mapArea} stops={visible} />
 
           {criteria.length === 0 && (
             <div className="rounded-xl border border-border bg-surface p-5 text-sm text-muted">
