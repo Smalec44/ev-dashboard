@@ -244,16 +244,22 @@ export function Dashboard() {
 
     // Only stations near the chosen break are stops at all; the rest of the
     // corridor is scenery. The window is in km, so a short trip gets the
-    // same tolerance as a long one.
+    // same tolerance as a long one — and once the trip is no longer than
+    // two windows, the window covers the whole route wherever the break
+    // sits, so every corridor candidate is a stop and the slider is moot.
+    const shortTrip = directKm <= 2 * STOP_WINDOW_KM;
     const window = STOP_WINDOW_KM / directKm;
-    const nearBreak = candidates.filter(
-      (s) => Math.abs((progress.get(s.id) ?? 0.5) - stopAt) <= window,
-    );
+    const nearBreak = shortTrip
+      ? candidates
+      : candidates.filter(
+          (s) => Math.abs((progress.get(s.id) ?? 0.5) - stopAt) <= window,
+        );
 
     return {
       from,
       to,
       directKm,
+      shortTrip,
       detours,
       progress,
       candidates: nearBreak,
@@ -287,10 +293,13 @@ export function Dashboard() {
         from: { lat: trip.from.lat, lon: trip.from.lon },
         to: { lat: trip.to.lat, lon: trip.to.lon },
         maxDetourKm: maxDetour,
+        stopAt,
+        // A short trip lists the whole corridor, so the refresh must cover it too.
+        windowKm: trip.shortTrip ? Math.max(STOP_WINDOW_KM, trip.directKm) : STOP_WINDOW_KM,
       },
       label: `${trip.from.city} → ${trip.to.city}`,
     };
-  }, [mode, region, radius, trip, maxDetour]);
+  }, [mode, region, radius, trip, maxDetour, stopAt]);
 
   async function refresh() {
     if (!scope || live.state === "busy") return;
@@ -512,7 +521,14 @@ export function Dashboard() {
           </div>
         )}
 
-        {mode === "trip" && (
+        {mode === "trip" && trip?.shortTrip && (
+          <p className="mt-5 text-xs text-muted">
+            Short trip — every station along the way is listed; the break
+            slider appears for trips over {2 * STOP_WINDOW_KM} km.
+          </p>
+        )}
+
+        {mode === "trip" && !trip?.shortTrip && (
           <div className="mt-5">
             <div className="flex items-center justify-between gap-3">
               <label
@@ -610,7 +626,7 @@ export function Dashboard() {
             generatedAt &&
             `Charging data built ${generatedFormat.format(new Date(generatedAt))}. `}
           {live.state === "busy" &&
-            `Refreshing ${live.label} from the federal feed, live stall status and OpenStreetMap — up to a minute for a long trip…`}
+            `Refreshing ${live.label} from the federal feed, live stall status and OpenStreetMap — this can take up to a minute…`}
           {live.state === "done" && (
             <>
               Live for {live.label} since {generatedFormat.format(new Date(live.at))}
@@ -680,13 +696,16 @@ export function Dashboard() {
               </h2>
               <p className="text-sm text-muted">
                 {mode === "trip" && trip
-                  ? `${Math.round(trip.directKm)} km direct · ${ranked.length} stop${ranked.length === 1 ? "" : "s"} within ${STOP_WINDOW_KM} km of the break, ${maxDetour} km off the line`
+                  ? `${Math.round(trip.directKm)} km direct · ${ranked.length} stop${ranked.length === 1 ? "" : "s"} ${trip.shortTrip ? "along the way" : `within ${STOP_WINDOW_KM} km of the break`}, ${maxDetour} km off the line`
                   : `${ranked.length} charging ${ranked.length === 1 ? "spot" : "spots"} within ${radius} km`}
                 {flaggedCount > 0 &&
                   ` · ${flaggedCount} flagged for thin food nearby`}
               </p>
             </div>
-            <div className="flex gap-4 text-sm">
+            <div
+              className="flex gap-4 text-sm"
+              title="Per-kWh prices are per-operator estimates: the federal feed carries no tariffs."
+            >
               <div>
                 <span className="text-muted">AC avg </span>
                 <span className="font-medium tabular-nums">
@@ -698,6 +717,7 @@ export function Dashboard() {
                 <span className="font-medium tabular-nums">
                   {prices.dc !== null ? `CHF ${prices.dc.toFixed(2)}` : "—"}
                 </span>
+                <span className="text-muted"> · estimates</span>
               </div>
             </div>
           </div>
@@ -746,7 +766,9 @@ export function Dashboard() {
           {ranked.length === 0 ? (
             <div className="rounded-xl border border-border bg-surface p-5 text-sm text-muted">
               {mode === "trip"
-                ? `No charging spots within ${STOP_WINDOW_KM} km of the break point${trip && trip.corridorCount > 0 ? ` (${trip.corridorCount} elsewhere along the way)` : ""}. Move the break, widen the detour, or switch the connector filter to All.`
+                ? trip?.shortTrip
+                  ? `No charging spots along the way within ${maxDetour} km of the line. Widen the detour, or switch the connector filter to All.`
+                  : `No charging spots within ${STOP_WINDOW_KM} km of the break point${trip && trip.corridorCount > 0 ? ` (${trip.corridorCount} elsewhere along the way)` : ""}. Move the break, widen the detour, or switch the connector filter to All.`
                 : `No ${connector === "ALL" ? "" : `${connector} `}charging spots within ${radius} km of ${region?.city}. Widen the radius, or switch the connector filter to All.`}
             </div>
           ) : (

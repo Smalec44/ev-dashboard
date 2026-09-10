@@ -29,7 +29,10 @@ export const maxDuration = 120;
 const FEED_MEMO_MS = 60_000;
 let feedMemo: { at: number; buffer: Uint8Array } | null = null;
 
-/** Beyond this the refresh would take minutes; the response says to narrow the search. */
+/**
+ * Safety net: beyond this the refresh would take minutes. A trip refresh covers
+ * only the break window, so this should rarely trigger now.
+ */
 const MAX_CELLS = 80;
 
 const OVERPASS_ENDPOINTS = process.env.OVERPASS_ENDPOINTS?.split(",")
@@ -85,7 +88,7 @@ export async function GET(request: NextRequest) {
 
   if (cellBboxes(sites).length > MAX_CELLS) {
     return Response.json(
-      { error: "This search area is too large to refresh live — shorten the detour or radius." },
+      { error: "This break window is too wide to refresh live — narrow the window, detour or radius." },
       { status: 422 },
     );
   }

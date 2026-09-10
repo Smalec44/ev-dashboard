@@ -79,7 +79,6 @@ export const REGIONS: Region[] = [
   { slug: "burgdorf", city: "Burgdorf", canton: "BE", aliases: ["Berthoud"], lat: 47.059, lon: 7.6279 },
   { slug: "kloten", city: "Kloten", canton: "ZH", aliases: [], lat: 47.4515, lon: 8.5849 },
   { slug: "pully", city: "Pully", canton: "VD", aliases: [], lat: 46.5103, lon: 6.6618 },
-  { slug: "stadt-winterthur-kreis-1", city: "Stadt Winterthur (Kreis 1)", canton: "ZH", aliases: [], lat: 47.4949, lon: 8.7195 },
   { slug: "littau", city: "Littau", canton: "LU", aliases: [], lat: 47.05, lon: 8.2627 },
   { slug: "grenchen", city: "Grenchen", canton: "SO", aliases: ["Granges"], lat: 47.1921, lon: 7.3959 },
   { slug: "einsiedeln", city: "Einsiedeln", canton: "SZ", aliases: [], lat: 47.1285, lon: 8.7474 },
@@ -87,7 +86,6 @@ export const REGIONS: Region[] = [
   { slug: "herisau", city: "Herisau", canton: "AR", aliases: [], lat: 47.3862, lon: 9.2792 },
   { slug: "steffisburg", city: "Steffisburg", canton: "BE", aliases: [], lat: 46.7781, lon: 7.6325 },
   { slug: "morges", city: "Morges", canton: "VD", aliases: [], lat: 46.5113, lon: 6.4985 },
-  { slug: "seen-kreis-3", city: "Seen (Kreis 3)", canton: "ZH", aliases: [], lat: 47.4765, lon: 8.77 },
   { slug: "adliswil", city: "Adliswil", canton: "ZH", aliases: [], lat: 47.31, lon: 8.5246 },
   { slug: "schwyz", city: "Schwyz", canton: "SZ", aliases: ["Schwytz", "Svitto", "Sviz"], lat: 47.0208, lon: 8.6541 },
   { slug: "mendrisio", city: "Mendrisio", canton: "TI", aliases: [], lat: 45.8702, lon: 8.9816 },
@@ -107,7 +105,6 @@ export const REGIONS: Region[] = [
   { slug: "liestal", city: "Liestal", canton: "BL", aliases: [], lat: 47.4846, lon: 7.7345 },
   { slug: "schlieren", city: "Schlieren", canton: "ZH", aliases: [], lat: 47.3967, lon: 8.4476 },
   { slug: "delemont", city: "Delémont", canton: "JU", aliases: [], lat: 47.3649, lon: 7.3445 },
-  { slug: "wulflingen-kreis-6", city: "Wülflingen (Kreis 6)", canton: "ZH", aliases: ["Wuelflingen (Kreis 6)"], lat: 47.5104, lon: 8.6833 },
   { slug: "spiez", city: "Spiez", canton: "BE", aliases: [], lat: 46.6847, lon: 7.6911 },
   { slug: "glarus", city: "Glarus", canton: "GL", aliases: ["Glaris", "Glarona", "Glaruna"], lat: 47.0406, lon: 9.068 },
   { slug: "horw", city: "Horw", canton: "LU", aliases: [], lat: 47.0169, lon: 8.3096 },
@@ -1024,6 +1021,11 @@ function fold(value: string): string {
   return value.toLowerCase().normalize("NFD").replace(/[^a-z]/g, "");
 }
 
+// Case-insensitive, accents kept: "brügg" and "brugg" are different keys.
+function spell(value: string): string {
+  return value.trim().toLowerCase().normalize("NFC");
+}
+
 // Folded once at module load rather than per call: findRegion runs on every
 // keystroke, and re-folding ~5000 keys each time is wasted work at this size.
 const CANDIDATES: {
@@ -1032,11 +1034,15 @@ const CANDIDATES: {
   /** Name keys only. Kept apart so suggestions can rank a town called "Sion"
    *  above every town that merely sits in canton SG. */
   nameKeys: string[];
+  /** City and aliases lowercased but with their accents: what a user typed
+   *  when they meant this town and no other. */
+  spelledKeys: string[];
   cantonKey: string;
 }[] = REGIONS.map((region) => ({
   region,
   keys: [region.slug, region.city, region.canton, ...region.aliases].map(fold),
   nameKeys: [region.slug, region.city, ...region.aliases].map(fold),
+  spelledKeys: [region.city, ...region.aliases].map(spell),
   cantonKey: fold(region.canton),
 }));
 
@@ -1076,9 +1082,20 @@ export function matchRegions(query: string, limit = 8): Region[] {
   ].slice(0, limit);
 }
 
+/**
+ * The one town a query names. Written as typed, accents and all, a name beats
+ * anything that merely folds to the same letters — "Brügg" is Brügg BE, even
+ * though the larger Brugg AG comes first in the list and folds identically.
+ * Only then does the folded lookup run, so "bruegg" and "brugg" still find
+ * their towns; a name two cantons share resolves to the larger, earlier one.
+ */
 export function findRegion(query: string): Region | null {
   const needle = fold(query);
   if (!needle) return null;
+
+  const spelled = spell(query);
+  const named = CANDIDATES.find(({ spelledKeys }) => spelledKeys.includes(spelled));
+  if (named) return named.region;
 
   const exact = CANDIDATES.find(({ keys }) => keys.includes(needle));
   if (exact) return exact.region;

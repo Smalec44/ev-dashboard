@@ -180,6 +180,21 @@ function parseCoords(record: FeedRecord): LatLon | null {
   return { lat, lon };
 }
 
+/** The feed's four spellings of the country, filed as a city by some operators. */
+const COUNTRY_NAMES = new Set(["schweiz", "suisse", "svizzera", "switzerland"]);
+
+/**
+ * Some records carry a placeholder ("-"), a stray address fragment ("/ West",
+ * "Süd 5a") or the country itself ("Schweiz") where the city should be. None
+ * of those is a place name: anything not starting with a letter, carrying a
+ * digit, or naming the country is rejected so the coordinates answer instead.
+ */
+function looksLikePlaceName(city: string): boolean {
+  if (!/^\p{L}/u.test(city)) return false;
+  if (/\d/.test(city)) return false;
+  return !COUNTRY_NAMES.has(city.toLowerCase());
+}
+
 function stationName(record: FeedRecord): string {
   // The feed returns either an array of localised names or a single object.
   const raw = record.ChargingStationNames;
@@ -205,6 +220,7 @@ interface Accumulator {
   address: string;
   publiclyAccessible: boolean;
   stalls: number;
+  /** Highest known power; 0 while no record has reported one. Published as null. */
   maxPowerKw: number;
   isDc: boolean;
   latSum: number;
@@ -232,10 +248,7 @@ export function buildSites(records: FeedRecord[]): Site[] {
      */
     const rawCity = record.Address?.City?.trim();
     const match = rawCity ? lookupCity(rawCity) : undefined;
-    // Some records carry a placeholder ("-") or a stray address fragment
-    // ("/ West") where the city should be; anything not starting with a letter
-    // is not a place name, so let the coordinates answer instead.
-    const named = rawCity && /^\p{L}/u.test(rawCity) ? rawCity : null;
+    const named = rawCity && looksLikePlaceName(rawCity) ? rawCity : null;
     let city: string;
     let canton: string;
     if (match) {
@@ -250,6 +263,9 @@ export function buildSites(records: FeedRecord[]): Site[] {
     const stationId = record.ChargingStationId?.trim();
     const key = stationId !== undefined && stationId !== "" ? stationId : record.EvseID;
     const facilities = record.ChargingFacilities ?? [];
+    // Some operators file 0 (or nothing) as the power — that is "unknown",
+    // not a 0 kW charger. Kept as 0 in the accumulator so that max() over
+    // sibling records lets any known value win, and published as null.
     const power = Math.max(
       0,
       ...facilities.map((f) => Number(f.power)).filter(Number.isFinite),
@@ -303,7 +319,7 @@ export function buildSites(records: FeedRecord[]): Site[] {
       canton: site.canton,
       address: site.address,
       connectorType,
-      maxPowerKw: Math.round(site.maxPowerKw * 10) / 10,
+      maxPowerKw: site.maxPowerKw > 0 ? Math.round(site.maxPowerKw * 10) / 10 : null,
       stalls: site.stalls,
       pricePerKwh: tariff[connectorType],
       priceIsEstimate: true,
@@ -320,15 +336,49 @@ export function buildSites(records: FeedRecord[]): Site[] {
 const TWIN_METRES = 50;
 
 /**
+ * Same operator, whatever the names, this close together: one site. Tight
+ * enough that "Nord" and "Süd" across a car park stay apart, wide enough to
+ * absorb operators who round the coordinates of every bay to the same spot.
+ */
+const SAME_SPOT_METRES = 5;
+
+/**
  * Parking-bay suffixes some operators put in the name — "… PP202", "… P 14",
  * "… Platz 3" — so that the bays of one car park compare equal. Anything
  * else in the name is kept, so "Nord" and "Süd" stay two sites.
  */
 const BAY_SUFFIX = /[\s,\-–]*(?:pp|p|platz|nr\.?|#)\s?\d+[a-z]?$/i;
 
+/** Stray punctuation some operators leave at the end: "Nordpark rechts ." */
+const TRAILING_PUNCTUATION = /[\s.,;:\-–]+$/;
+
 function twinKey(site: Accumulator): string {
   const name = site.name.trim().toLowerCase().replace(BAY_SUFFIX, "").trim();
   return `${site.operator}\u0000${name}`;
+}
+
+/** The car park's name rather than one bay's: suffix and trailing punctuation gone. */
+function siteName(name: string): string {
+  return name.replace(BAY_SUFFIX, "").replace(TRAILING_PUNCTUATION, "").trim() || name;
+}
+
+const centre = (site: Accumulator): LatLon => ({
+  lat: site.latSum / site.stalls,
+  lon: site.lonSum / site.stalls,
+});
+
+/** Folds `site` into `twin`, which then stands for both. */
+function absorb(twin: Accumulator, site: Accumulator): void {
+  twin.stalls += site.stalls;
+  twin.maxPowerKw = Math.max(twin.maxPowerKw, site.maxPowerKw);
+  twin.isDc ||= site.isDc;
+  twin.publiclyAccessible ||= site.publiclyAccessible;
+  twin.latSum += site.latSum;
+  twin.lonSum += site.lonSum;
+  twin.evseIds.push(...site.evseIds);
+  // The lowest id names the merged site, so the outcome does not depend
+  // on the order the feed happened to list the records in.
+  if (site.id < twin.id) twin.id = site.id;
 }
 
 /**
@@ -337,33 +387,20 @@ function twinKey(site: Accumulator): string {
  * four times in a row, each with one stall. Name plus proximity is the only
  * signal the feed leaves to put them back together.
  */
-function mergeTwins(sites: Accumulator[]): Accumulator[] {
+function mergeByName(sites: Accumulator[]): Accumulator[] {
   const groups = new Map<string, Accumulator[]>();
   const kept: Accumulator[] = [];
   for (const site of sites) {
     const key = twinKey(site);
     const group = groups.get(key) ?? [];
-    const point = { lat: site.latSum / site.stalls, lon: site.lonSum / site.stalls };
+    const point = centre(site);
     const twin = group.find(
-      (other) =>
-        haversineMetres(point, {
-          lat: other.latSum / other.stalls,
-          lon: other.lonSum / other.stalls,
-        }) <= TWIN_METRES,
+      (other) => haversineMetres(point, centre(other)) <= TWIN_METRES,
     );
     if (twin) {
-      twin.stalls += site.stalls;
-      twin.maxPowerKw = Math.max(twin.maxPowerKw, site.maxPowerKw);
-      twin.isDc ||= site.isDc;
-      twin.publiclyAccessible ||= site.publiclyAccessible;
-      twin.latSum += site.latSum;
-      twin.lonSum += site.lonSum;
-      twin.evseIds.push(...site.evseIds);
-      // The lowest id names the merged site, so the outcome does not depend
-      // on the order the feed happened to list the records in.
-      if (site.id < twin.id) twin.id = site.id;
+      absorb(twin, site);
       // A merged site is the car park, not one of its bays.
-      twin.name = twin.name.replace(BAY_SUFFIX, "").trim() || twin.name;
+      twin.name = siteName(twin.name);
       continue;
     }
     group.push(site);
@@ -371,6 +408,54 @@ function mergeTwins(sites: Accumulator[]): Accumulator[] {
     kept.push(site);
   }
   return kept;
+}
+
+/**
+ * Other operators number the bays in ways the suffix pattern cannot know
+ * ("Parkfeld 01" … "Parkfeld 05") or leave a stray dot on one twin ("Aarau
+ * Nordpark rechts ."), while filing every bay at the same coordinates. Same
+ * operator at the same spot is one site whatever the names say; the shortest
+ * cleaned name is the least likely to carry a bay's own label.
+ *
+ * Candidates are bucketed on a ~10 m grid so that each site is compared with
+ * its neighbours only, not with every other site of a large operator.
+ */
+function mergeByPlace(sites: Accumulator[]): Accumulator[] {
+  const CELL = 1e-4; // degrees: ~11 m of latitude, ~7.5 m of longitude at 47°N
+  const cells = new Map<string, Accumulator[]>();
+  const kept: Accumulator[] = [];
+  for (const site of sites) {
+    const point = centre(site);
+    const row = Math.floor(point.lat / CELL);
+    const col = Math.floor(point.lon / CELL);
+    let twin: Accumulator | undefined;
+    for (let dr = -1; dr <= 1 && !twin; dr += 1) {
+      for (let dc = -1; dc <= 1 && !twin; dc += 1) {
+        const bucket = cells.get(`${site.operator}\u0000${row + dr}\u0000${col + dc}`);
+        twin = bucket?.find(
+          (other) => haversineMetres(point, centre(other)) <= SAME_SPOT_METRES,
+        );
+      }
+    }
+    if (twin) {
+      absorb(twin, site);
+      const [name] = [siteName(twin.name), siteName(site.name)].sort(
+        (a, b) => a.length - b.length || a.localeCompare(b),
+      );
+      twin.name = name ?? twin.name;
+      continue;
+    }
+    const key = `${site.operator}\u0000${row}\u0000${col}`;
+    const cell = cells.get(key) ?? [];
+    cell.push(site);
+    cells.set(key, cell);
+    kept.push(site);
+  }
+  return kept;
+}
+
+function mergeTwins(sites: Accumulator[]): Accumulator[] {
+  return mergeByPlace(mergeByName(sites));
 }
 
 /**

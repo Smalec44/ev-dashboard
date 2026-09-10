@@ -14,7 +14,10 @@ const feed = JSON.parse(
 ) as StationFeed;
 
 test("the station file holds the whole country, not a partial pull", () => {
-  assert.ok(feed.stations.length > 7_500, `only ${feed.stations.length} stations`);
+  // ~5800 after same-spot bays are merged into their car park; a partial
+  // pull or a merge that runs away would land well outside this.
+  assert.ok(feed.stations.length > 5_000, `only ${feed.stations.length} stations`);
+  assert.ok(feed.stations.length < 7_000, `${feed.stations.length} stations: are twins merging?`);
   assert.ok(Number.isFinite(Date.parse(feed.generatedAt)), "generatedAt is not a date");
 });
 

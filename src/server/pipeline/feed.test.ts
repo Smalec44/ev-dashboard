@@ -60,15 +60,78 @@ test("parking-bay numbers in the name do not keep bays of one car park apart", (
   const bays = buildSites([
     record({ ChargingStationId: "A", EvseID: "E1", ChargingStationNames: [{ lang: "de", value: "SUVA Neumühlequai 6 PP202" }] }),
     record({ ChargingStationId: "B", EvseID: "E2", ChargingStationNames: [{ lang: "de", value: "SUVA Neumühlequai 6 PP204" }] }),
-    record({ ChargingStationId: "C", EvseID: "E3", ChargingStationNames: [{ lang: "de", value: "SUVA Neumühlequai 6 PPEinfahrt" }] }),
+    // A few metres off, so that only the name decides whether it is a bay.
+    record({ ChargingStationId: "C", EvseID: "E3", GeoCoordinates: { Google: "47.37708 8.5417" }, ChargingStationNames: [{ lang: "de", value: "SUVA Neumühlequai 6 PPEinfahrt" }] }),
   ]);
   assert.deepEqual(bays.map((s) => s.stalls).sort(), [1, 2]);
   assert.equal(bays.find((s) => s.stalls === 2)?.name, "SUVA Neumühlequai 6");
   const sides = buildSites([
     record({ ChargingStationId: "A", EvseID: "E1", ChargingStationNames: [{ lang: "de", value: "Raststätte Nord" }] }),
-    record({ ChargingStationId: "B", EvseID: "E2", ChargingStationNames: [{ lang: "de", value: "Raststätte Süd" }] }),
+    record({ ChargingStationId: "B", EvseID: "E2", GeoCoordinates: { Google: "47.37735 8.5417" }, ChargingStationNames: [{ lang: "de", value: "Raststätte Süd" }] }),
   ]);
   assert.equal(sides.length, 2);
+});
+
+test("same operator at the same spot is one site whatever the bays are called", () => {
+  const bays = buildSites([
+    record({ ChargingStationId: "B", EvseID: "E2", operator: "eCarUp", ChargingStationNames: [{ lang: "de", value: "Aarwangen Parkfeld 02" }] }),
+    record({ ChargingStationId: "A", EvseID: "E1", operator: "eCarUp", ChargingStationNames: [{ lang: "de", value: "Aarwangen Parkfeld 01" }] }),
+    record({ ChargingStationId: "C", EvseID: "E3", operator: "eCarUp", GeoCoordinates: { Google: "47.37692 8.54172" }, ChargingStationNames: [{ lang: "de", value: "Aarwangen Parkfeld 03 ." }] }),
+  ]);
+  assert.equal(bays.length, 1);
+  assert.equal(at(bays, 0).id, "A");
+  assert.equal(at(bays, 0).stalls, 3);
+  assert.equal(at(bays, 0).name, "Aarwangen Parkfeld 01");
+  assert.deepEqual(at(bays, 0).evseIds.sort(), ["E1", "E2", "E3"]);
+
+  // The shortest cleaned name wins: the stray dot is not part of the name.
+  const dotted = buildSites([
+    record({ ChargingStationId: "A", EvseID: "E1", ChargingStationNames: [{ lang: "de", value: "Aarau Nordpark rechts ." }] }),
+    record({ ChargingStationId: "B", EvseID: "E2", ChargingStationNames: [{ lang: "de", value: "Aarau Nordpark rechts" }] }),
+  ]);
+  assert.equal(dotted.length, 1);
+  assert.equal(at(dotted, 0).name, "Aarau Nordpark rechts");
+
+  // Another operator at the same spot, or the same operator 50 m away, stays apart.
+  const others = buildSites([
+    record({ ChargingStationId: "A", EvseID: "E1", operator: "Move", ChargingStationNames: [{ lang: "de", value: "Parkfeld 01" }] }),
+    record({ ChargingStationId: "B", EvseID: "E2", operator: "evpass", ChargingStationNames: [{ lang: "de", value: "Parkfeld 02" }] }),
+    record({ ChargingStationId: "C", EvseID: "E3", operator: "Move", GeoCoordinates: { Google: "47.37735 8.5417" }, ChargingStationNames: [{ lang: "de", value: "Parkfeld 03" }] }),
+  ]);
+  assert.equal(others.length, 3);
+});
+
+test("a record without a usable power publishes null, and never drags a twin down", () => {
+  const unknown = at(buildSites([record({ ChargingFacilities: [{ power: 0, powertype: "AC_3_PHASE" }] })]), 0);
+  assert.equal(unknown.maxPowerKw, null);
+  assert.equal(unknown.connectorType, "AC");
+  const missing = at(buildSites([record({ ChargingFacilities: [] })]), 0);
+  assert.equal(missing.maxPowerKw, null);
+
+  // Zero on one stall of a site, or one twin of a pair, is "unknown", not 0 kW.
+  const site = at(buildSites([
+    record({ EvseID: "E1", ChargingFacilities: [{ power: 0 }] }),
+    record({ EvseID: "E2", ChargingFacilities: [{ power: 50, powertype: "DC" }] }),
+  ]), 0);
+  assert.equal(site.maxPowerKw, 50);
+  assert.equal(site.connectorType, "DC");
+  const twin = at(buildSites([
+    record({ ChargingStationId: "A", EvseID: "E1", ChargingFacilities: [{ power: 22 }] }),
+    record({ ChargingStationId: "B", EvseID: "E2", ChargingFacilities: [] }),
+  ]), 0);
+  assert.equal(twin.maxPowerKw, 22);
+});
+
+test("a country name or an address fragment in the city field yields the nearest town", () => {
+  for (const City of ["Schweiz", "Suisse", "Svizzera", "Switzerland", "Süd 5a", "-"]) {
+    const site = at(buildSites([record({ Address: { Street: "Bahnhofstrasse 1", PostalCode: "8001", City } })]), 0);
+    assert.equal(site.city, "Zürich", City);
+    assert.equal(site.canton, "ZH", City);
+    assert.equal(site.address, "Bahnhofstrasse 1, 8001, Zürich", City);
+  }
+  // A real place REGIONS does not list keeps the operator's spelling.
+  const hamlet = at(buildSites([record({ Address: { City: "Le Lignon" } })]), 0);
+  assert.equal(hamlet.city, "Le Lignon");
 });
 
 test("a charger over 43 kW is DC whatever power type the operator filed", () => {

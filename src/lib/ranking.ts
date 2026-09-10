@@ -151,8 +151,9 @@ const FLOOR_SPEED_KW = 3.7;
  * seat: 11 → 22 kW halves the wait just as 150 → 300 kW does, and a linear
  * scale would give every AC site a single-digit score and no ordering at all.
  */
-function speedScore(kw: number): number {
-  if (kw < FLOOR_SPEED_KW) return 0;
+function speedScore(kw: number | null): number {
+  // Unreported power is scored as the slowest useful wall charger: no guess, just the floor.
+  if (kw === null || kw < FLOOR_SPEED_KW) return 0;
   const t =
     Math.log(Math.min(kw, TOP_SPEED_KW) / FLOOR_SPEED_KW) /
     Math.log(TOP_SPEED_KW / FLOOR_SPEED_KW);

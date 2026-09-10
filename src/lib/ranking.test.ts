@@ -42,19 +42,22 @@ test("a station's score does not depend on which other stations are listed", () 
 });
 
 test("speed is scored on a log scale, capped at 350 kW", () => {
-  const [top, fast, mid, wall, dead] = rankStations(
+  const [top, fast, mid, wall, dead, unknown] = rankStations(
     [
       station("top", { maxPowerKw: 600 }),
       station("fast", { maxPowerKw: 350 }),
       station("mid", { maxPowerKw: 50 }),
       station("wall", { maxPowerKw: 11 }),
       station("dead", { maxPowerKw: 0 }),
+      station("unknown", { maxPowerKw: null }),
     ],
     { criteria: ["speed"], foodThreshold: 0 },
   ).map((r) => r.score);
   assert.equal(top, 100);
   assert.equal(fast, 100);
   assert.equal(dead, 0);
+  // Power the feed did not report is scored as the floor, not guessed.
+  assert.equal(unknown, 0);
   assert.ok(wall !== undefined && mid !== undefined);
   assert.ok(wall > 0 && wall < mid && mid < fast);
   // Doubling the power is worth the same step wherever it happens.

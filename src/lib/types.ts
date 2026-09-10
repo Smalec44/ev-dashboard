@@ -74,7 +74,8 @@ export interface ChargingStation extends LatLon {
   canton: string;
   address: string;
   connectorType: ConnectorType;
-  maxPowerKw: number;
+  /** Peak kW of the fastest connector; null when the feed reports 0 or nothing. */
+  maxPowerKw: number | null;
   stalls: number;
   pricePerKwh: number;
   /** True when the price is a per-operator estimate, not a published tariff. */

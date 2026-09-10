@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { applyRefresh, scopeFromParams, scopeToParams, type RefreshScope } from "./refresh.ts";
+import { applyRefresh, inScope, scopeFromParams, scopeToParams, type RefreshScope } from "./refresh.ts";
 import type { ChargingStation } from "./types.ts";
 
 /** Element at `index`, failing the test loudly rather than typing as undefined. */
@@ -76,9 +76,47 @@ test("when an OpenStreetMap pass failed, that facet is kept from before", () => 
 
 test("scope parameters round-trip and reject nonsense", () => {
   assert.deepEqual(scopeFromParams(scopeToParams(zurich)), zurich);
-  const trip: RefreshScope = { mode: "trip", from: { lat: 47.37, lon: 8.54 }, to: { lat: 46.0, lon: 8.95 }, maxDetourKm: 25 };
+  const trip: RefreshScope = {
+    mode: "trip",
+    from: { lat: 47.37, lon: 8.54 },
+    to: { lat: 46.0, lon: 8.95 },
+    maxDetourKm: 25,
+    stopAt: 0.4,
+    windowKm: 30,
+  };
   assert.deepEqual(scopeFromParams(scopeToParams(trip)), trip);
   assert.equal(scopeFromParams(new URLSearchParams("mode=region&lat=47&lon=8")), null);
   assert.equal(scopeFromParams(new URLSearchParams("mode=region&lat=47&lon=8&radiusKm=500")), null);
   assert.equal(scopeFromParams(new URLSearchParams("mode=region&lat=0&lon=0&radiusKm=5")), null);
+
+  const tripParams = (overrides: Record<string, string>) => {
+    const params = scopeToParams(trip);
+    for (const [key, value] of Object.entries(overrides)) params.set(key, value);
+    return params;
+  };
+  const withoutWindow = scopeToParams(trip);
+  withoutWindow.delete("windowKm");
+  assert.equal(scopeFromParams(withoutWindow), null);
+  assert.equal(scopeFromParams(tripParams({ stopAt: "1.5" })), null);
+  assert.equal(scopeFromParams(tripParams({ stopAt: "-0.1" })), null);
+  assert.equal(scopeFromParams(tripParams({ windowKm: "0" })), null);
+  assert.equal(scopeFromParams(tripParams({ windowKm: "61" })), null);
+});
+
+test("a trip refresh covers only the break window along the corridor", () => {
+  // Geneva → St. Gallen, about 280 km on the direct line; the break is set near Bern.
+  const trip: RefreshScope = {
+    mode: "trip",
+    from: { lat: 46.2044, lon: 6.1432 },
+    to: { lat: 47.4245, lon: 9.3767 },
+    maxDetourKm: 15,
+    stopAt: 0.45,
+    windowKm: 25,
+  };
+  // Bern: on the corridor and within a couple of km of the break.
+  assert.equal(inScope(trip, { lat: 46.95, lon: 7.45 }), true);
+  // Zürich: on the corridor, but over 90 km past the break.
+  assert.equal(inScope(trip, { lat: 47.38, lon: 8.54 }), false);
+  // Biel: level with the break along the route, but 16 km off the line — the detour cap still applies.
+  assert.equal(inScope(trip, { lat: 47.14, lon: 7.25 }), false);
 });

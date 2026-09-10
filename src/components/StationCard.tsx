@@ -272,31 +272,24 @@ export function StationCard({
         </div>
       </div>
 
-      <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-2 text-sm sm:grid-cols-3 lg:grid-cols-5">
+      <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-2 text-sm sm:grid-cols-4">
         <div>
           <dt className="text-xs text-muted">Type</dt>
           <dd className="font-medium">
-            {station.connectorType} · {station.maxPowerKw} kW
+            {station.connectorType} ·{" "}
+            {station.maxPowerKw === null ? (
+              <span className="font-normal text-muted">power not reported</span>
+            ) : (
+              `${station.maxPowerKw} kW`
+            )}
           </dd>
         </div>
         <div>
           <dt className="text-xs text-muted">Price</dt>
           <dd className="font-medium tabular-nums">
-            {station.pricePerKwh === 0 ? (
-              "Free"
-            ) : (
-              <>
-                CHF {station.pricePerKwh.toFixed(2)}/kWh
-                {station.priceIsEstimate && (
-                  <span
-                    className="ml-1 text-xs font-normal text-muted"
-                    title="Per-operator estimate — the federal feed carries no tariffs"
-                  >
-                    est.
-                  </span>
-                )}
-              </>
-            )}
+            {station.pricePerKwh === 0
+              ? "Free"
+              : `CHF ${station.pricePerKwh.toFixed(2)}/kWh`}
           </dd>
         </div>
         <div>
@@ -318,21 +311,6 @@ export function StationCard({
               </span>
             ) : (
               station.stalls
-            )}
-          </dd>
-        </div>
-        <div>
-          <dt className="text-xs text-muted">Uptime</dt>
-          <dd className="font-medium tabular-nums">
-            {station.reliabilityPct === undefined ? (
-              <span
-                className="text-muted"
-                title="Not published in the federal charging feed"
-              >
-                —
-              </span>
-            ) : (
-              `${station.reliabilityPct}%`
             )}
           </dd>
         </div>

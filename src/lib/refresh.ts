@@ -1,4 +1,4 @@
-import { detourKm, distanceKm } from "./geo";
+import { detourKm, distanceKm, routeProgress } from "./geo";
 import type { ChargingStation, LatLon } from "./types";
 
 /**
@@ -9,7 +9,16 @@ import type { ChargingStation, LatLon } from "./types";
  */
 export type RefreshScope =
   | { mode: "region"; city: string; lat: number; lon: number; radiusKm: number }
-  | { mode: "trip"; from: LatLon; to: LatLon; maxDetourKm: number };
+  | {
+      mode: "trip";
+      from: LatLon;
+      to: LatLon;
+      maxDetourKm: number;
+      /** Where along the route (0–1) the break is; the refresh covers only its window. */
+      stopAt: number;
+      /** Half-width of that window along the route, in km. */
+      windowKm: number;
+    };
 
 export interface RefreshResponse {
   refreshedAt: string;
@@ -22,12 +31,21 @@ export interface RefreshResponse {
   errors: string[];
 }
 
-/** Mirrors the search: the radius plus anything labelled with the town, or the detour corridor. */
+/**
+ * Mirrors the search: the radius plus anything labelled with the town, or —
+ * for a trip — the detour corridor, cut down to the stretch around the break.
+ * A whole Geneva → St. Gallen corridor is hundreds of stations nobody will
+ * stop at; the window around the chosen stop is what the driver is looking at.
+ */
 export function inScope(scope: RefreshScope, station: LatLon & { city?: string }): boolean {
   if (scope.mode === "region") {
     return distanceKm(scope, station) <= scope.radiusKm || station.city === scope.city;
   }
-  return detourKm(scope.from, scope.to, station) <= scope.maxDetourKm;
+  if (detourKm(scope.from, scope.to, station) > scope.maxDetourKm) return false;
+  const alongKm =
+    Math.abs(routeProgress(scope.from, scope.to, station) - scope.stopAt) *
+    distanceKm(scope.from, scope.to);
+  return alongKm <= scope.windowKm;
 }
 
 export function scopeToParams(scope: RefreshScope): URLSearchParams {
@@ -47,6 +65,8 @@ export function scopeToParams(scope: RefreshScope): URLSearchParams {
     toLat: String(scope.to.lat),
     toLon: String(scope.to.lon),
     maxDetourKm: String(scope.maxDetourKm),
+    stopAt: String(scope.stopAt),
+    windowKm: String(scope.windowKm),
   });
 }
 
@@ -82,12 +102,15 @@ export function scopeFromParams(params: URLSearchParams): RefreshScope | null {
     const toLat = num("toLat");
     const toLon = num("toLon");
     const maxDetourKm = km("maxDetourKm");
+    const windowKm = km("windowKm");
+    const stopAt = num("stopAt");
     if (fromLat === null || fromLon === null || toLat === null || toLon === null) return null;
-    if (maxDetourKm === null) return null;
+    if (maxDetourKm === null || windowKm === null) return null;
+    if (stopAt === null || stopAt < 0 || stopAt > 1) return null;
     const from = { lat: fromLat, lon: fromLon };
     const to = { lat: toLat, lon: toLon };
     if (!inSwitzerland(from) || !inSwitzerland(to)) return null;
-    return { mode: "trip", from, to, maxDetourKm };
+    return { mode: "trip", from, to, maxDetourKm, stopAt, windowKm };
   }
   return null;
 }
