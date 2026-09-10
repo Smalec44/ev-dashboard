@@ -1,0 +1,4 @@
+#!/bin/sh
+# The production build is the slowest gate, so it runs on push, not commit.
+[ "$SKIP_CHECKS" = "1" ] && exit 0
+exec npm run build

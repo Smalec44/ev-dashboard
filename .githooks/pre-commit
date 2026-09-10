@@ -1,0 +1,6 @@
+#!/bin/sh
+# Pushes back before a commit lands: types, lint and tests must pass.
+# Installed by `npm install` (see the "prepare" script). Skip once with
+# SKIP_CHECKS=1 git commit … — but CI runs the same gate, so it only defers.
+[ "$SKIP_CHECKS" = "1" ] && exit 0
+exec npm run check
