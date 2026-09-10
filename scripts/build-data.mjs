@@ -125,7 +125,7 @@ async function main() {
       food: "OpenStreetMap contributors, via Overpass API (ODbL)",
       green: "OpenStreetMap contributors, via Overpass API (ODbL)",
       parking: "OpenStreetMap contributors, via Overpass API (ODbL)",
-      pricing: "Estimated per-operator tariffs — not from the federal feed",
+      pricing: "Operators' published ad-hoc tariffs (src/data/tariffs.ts); national default where none is published",
     },
     foodRadiusMetres: FOOD_RADIUS_M,
     greenRadiusMetres: GREEN_RADIUS_M,

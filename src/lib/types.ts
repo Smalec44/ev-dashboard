@@ -78,7 +78,7 @@ export interface ChargingStation extends LatLon {
   maxPowerKw: number | null;
   stalls: number;
   pricePerKwh: number;
-  /** True when the price is a per-operator estimate, not a published tariff. */
+  /** True when no published tariff was found for the operator and the default applies. */
   priceIsEstimate?: boolean;
   /** Absent for feed-sourced stations: the federal feed carries no uptime. */
   reliabilityPct?: number;

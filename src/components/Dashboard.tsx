@@ -704,7 +704,7 @@ export function Dashboard() {
             </div>
             <div
               className="flex gap-4 text-sm"
-              title="Per-kWh prices are per-operator estimates: the federal feed carries no tariffs."
+              title="Ad-hoc tariffs as published by each operator, with the date they were checked on every card. The federal feed carries no prices; operators without a published tariff get a national default."
             >
               <div>
                 <span className="text-muted">AC avg </span>
@@ -717,7 +717,7 @@ export function Dashboard() {
                 <span className="font-medium tabular-nums">
                   {prices.dc !== null ? `CHF ${prices.dc.toFixed(2)}` : "—"}
                 </span>
-                <span className="text-muted"> · estimates</span>
+                <span className="text-muted"> · ad-hoc tariffs</span>
               </div>
             </div>
           </div>

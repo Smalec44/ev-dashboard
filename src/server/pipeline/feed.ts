@@ -5,6 +5,7 @@
  */
 import { gunzipSync } from "node:zlib";
 import { REGIONS } from "../../data/regions.ts";
+import { DEFAULT_TARIFF, tariffFor } from "../../data/tariffs.ts";
 import { haversineMetres } from "./geo.ts";
 import type { ChargingStation, ConnectorType, LatLon, LiveStatus, Region } from "../../lib/types.ts";
 
@@ -130,28 +131,15 @@ function nearestRegion(point: LatLon): Region {
   return best;
 }
 
-// The federal feed carries no tariffs, so prices are per-operator estimates.
-const TARIFFS: Record<string, Record<ConnectorType, number>> = {
-  Move: { AC: 0.45, DC: 0.65 },
-  eCarUp: { AC: 0.4, DC: 0.6 },
-  Fastned: { AC: 0.49, DC: 0.65 },
-  "PLUG N ROLL": { AC: 0.45, DC: 0.65 },
-  evpass: { AC: 0.45, DC: 0.68 },
-  "M-Charge": { AC: 0.42, DC: 0.6 },
-  Tesla: { AC: 0.4, DC: 0.55 },
-  Chargepoint: { AC: 0.42, DC: 0.62 },
-  "Shell Recharge": { AC: 0.49, DC: 0.71 },
-  GoFast: { AC: 0.45, DC: 0.64 },
-  Electra: { AC: 0.45, DC: 0.59 },
-  Autosense: { AC: 0.45, DC: 0.66 },
-  Agrola: { AC: 0.44, DC: 0.63 },
-  "Lidl Schweiz AG": { AC: 0.35, DC: 0.55 },
-  "Energie 360 Grad AG": { AC: 0.39, DC: 0.62 },
-  "swisscharge.ch AG": { AC: 0.44, DC: 0.66 },
-  "IWB Industrielle Werke Basel": { AC: 0.38, DC: 0.6 },
-  "Elektrizitätswerk der Stadt Zürich": { AC: 0.4, DC: 0.62 },
-};
-const DEFAULT_TARIFF: Record<ConnectorType, number> = { AC: 0.45, DC: 0.65 };
+// The federal feed carries no tariffs; prices come from the dated table in
+// src/data/tariffs.ts, and the national default where an operator is missing.
+function priceFor(operator: string, connectorType: ConnectorType): { price: number; published: boolean } {
+  const tariff = tariffFor(operator);
+  const key = connectorType === "DC" ? "dc" : "ac";
+  const value = tariff?.[key];
+  if (value !== undefined && value !== null) return { price: value, published: true };
+  return { price: DEFAULT_TARIFF[key], published: false };
+}
 
 /**
  * Switzerland with a margin wide enough for border sites. The feed carries
@@ -310,7 +298,7 @@ export function buildSites(records: FeedRecord[]): Site[] {
 
   return mergeTwins([...sites.values()]).map((site) => {
     const connectorType: ConnectorType = site.isDc ? "DC" : "AC";
-    const tariff = TARIFFS[site.operator] ?? DEFAULT_TARIFF;
+    const { price, published } = priceFor(site.operator, connectorType);
     return {
       id: site.id,
       name: site.name,
@@ -321,8 +309,9 @@ export function buildSites(records: FeedRecord[]): Site[] {
       connectorType,
       maxPowerKw: site.maxPowerKw > 0 ? Math.round(site.maxPowerKw * 10) / 10 : null,
       stalls: site.stalls,
-      pricePerKwh: tariff[connectorType],
-      priceIsEstimate: true,
+      pricePerKwh: price,
+      // "Estimate" now means "no published tariff found for this operator".
+      priceIsEstimate: !published,
       publiclyAccessible: site.publiclyAccessible,
       lat: Math.round((site.latSum / site.stalls) * 1e5) / 1e5,
       lon: Math.round((site.lonSum / site.stalls) * 1e5) / 1e5,

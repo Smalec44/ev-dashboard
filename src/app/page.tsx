@@ -8,8 +8,8 @@ import { activeAttributions } from "@/server/domain/attribution";
 
 /**
  * National charging tariffs, averaged over the whole station file at build
- * time. They are per-operator estimates (the federal feed carries no
- * prices), so a build-time figure is exactly as current as a live one.
+ * time. Prices come from the dated tariff table, not the federal feed (which
+ * carries none), so a build-time figure is exactly as current as a live one.
  */
 function nationalChargingPrices() {
   const feed = JSON.parse(

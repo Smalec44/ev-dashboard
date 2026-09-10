@@ -1,7 +1,8 @@
+import { tariffFor } from "@/data/tariffs";
 import { routeViaStationUrl, stationMapUrl } from "@/lib/maps";
 import { openState } from "@/lib/openingHours";
 import { liveFreeStalls, type RankedStation } from "@/lib/ranking";
-import type { FoodSpot, ParkingTerms, Region } from "@/lib/types";
+import type { ChargingStation, FoodSpot, ParkingTerms, Region } from "@/lib/types";
 
 const CRITERION_LABELS: Record<string, string> = {
   speed: "Speed",
@@ -38,6 +39,24 @@ const liveTimeFormat = new Intl.DateTimeFormat("en-CH", {
   timeStyle: "short",
   timeZone: "Europe/Zurich",
 });
+
+const checkedFormat = new Intl.DateTimeFormat("en-CH", { dateStyle: "medium" });
+
+/** Where the price came from, for the tooltip: the operator's page and when it was read. */
+function priceTitle(station: ChargingStation): string {
+  const tariff = tariffFor(station.operator);
+  if (!tariff || station.priceIsEstimate) {
+    return `No published ad-hoc tariff found for ${station.operator} — national default shown`;
+  }
+  const parts = [
+    `${station.operator} ad-hoc tariff, checked ${checkedFormat.format(new Date(tariff.checkedOn))}`,
+  ];
+  if (tariff.varies) parts.push("varies by site or time of day");
+  if (tariff.blockingFee) parts.push(`blocking fee: ${tariff.blockingFee}`);
+  if (tariff.note) parts.push(tariff.note);
+  parts.push(tariff.source);
+  return parts.join(" · ");
+}
 
 /** DOM id of a station's card, so a map click can scroll the list to it. */
 export function cardElementId(stationId: string): string {
@@ -286,10 +305,13 @@ export function StationCard({
         </div>
         <div>
           <dt className="text-xs text-muted">Price</dt>
-          <dd className="font-medium tabular-nums">
+          <dd className="font-medium tabular-nums" title={priceTitle(station)}>
             {station.pricePerKwh === 0
               ? "Free"
               : `CHF ${station.pricePerKwh.toFixed(2)}/kWh`}
+            {station.priceIsEstimate && (
+              <span className="ml-1 text-xs font-normal text-muted">default</span>
+            )}
           </dd>
         </div>
         <div>
